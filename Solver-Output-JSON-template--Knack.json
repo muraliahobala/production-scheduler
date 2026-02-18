@@ -1,0 +1,111 @@
+{
+  "run_id": "2026-02-4week-plan",
+  "status": "feasible",
+  "summary": {
+    "total_orders": 2,
+    "orders_on_time": 2,
+    "orders_late": 0,
+    "max_lateness_hours": 0,
+    "total_processing_hours": 320
+  },
+  "order_results": [
+    {
+      "order_id": "po_001",
+      "required_quantity": 500,
+      "scheduled_quantity": 500,
+      "due_date": "2026-03-10T00:00:00Z",
+      "completion_time": "2026-03-08T16:00:00Z",
+      "lateness_hours": 0,
+      "is_on_time": true
+    },
+    {
+      "order_id": "po_002",
+      "required_quantity": 300,
+      "scheduled_quantity": 300,
+      "due_date": "2026-03-05T00:00:00Z",
+      "completion_time": "2026-03-03T12:00:00Z",
+      "lateness_hours": 0,
+      "is_on_time": true
+    }
+  ],
+  "schedule_operations": [
+    {
+      "temp_id": "2026-02-run-op-0001",
+      "order_id": "po_001",
+      "routing_operation_id": "ro_mach",
+      "work_center_id": "wc_machining",
+      "machine_id": "mach_01",
+      "qty": 250,
+      "start": "2026-02-20T08:00:00Z",
+      "end":   "2026-02-20T16:00:00Z",
+      "status": "Proposed"
+    },
+    {
+      "temp_id": "2026-02-run-op-0002",
+      "order_id": "po_001",
+      "routing_operation_id": "ro_mach",
+      "work_center_id": "wc_machining",
+      "machine_id": "mach_02",
+      "qty": 250,
+      "start": "2026-02-21T08:00:00Z",
+      "end":   "2026-02-21T16:00:00Z",
+      "status": "Proposed"
+    },
+    {
+      "temp_id": "2026-02-run-op-0003",
+      "order_id": "po_001",
+      "routing_operation_id": "ro_ht",
+      "work_center_id": "wc_heattreat",
+      "machine_id": "oven_01",
+      "qty": 500,
+      "start": "2026-02-22T08:00:00Z",
+      "end":   "2026-02-23T08:00:00Z",
+      "status": "Proposed"
+    },
+    {
+      "temp_id": "2026-02-run-op-0004",
+      "order_id": "po_001",
+      "routing_operation_id": "ro_coat",
+      "work_center_id": "wc_coating",
+      "machine_id": "coat_01",
+      "qty": 500,
+      "start": "2026-02-24T08:00:00Z",
+      "end":   "2026-02-25T16:00:00Z",
+      "status": "Proposed"
+    },
+    {
+      "temp_id": "2026-02-run-op-0005",
+      "order_id": "po_002",
+      "routing_operation_id": "ro_mach",
+      "work_center_id": "wc_machining",
+      "machine_id": "mach_01",
+      "qty": 300,
+      "start": "2026-02-26T08:00:00Z",
+      "end":   "2026-02-26T16:00:00Z",
+      "status": "Proposed"
+    },
+    {
+      "temp_id": "2026-02-run-op-0006",
+      "order_id": "po_002",
+      "routing_operation_id": "ro_ht",
+      "work_center_id": "wc_heattreat",
+      "machine_id": "oven_01",
+      "qty": 300,
+      "start": "2026-02-27T08:00:00Z",
+      "end":   "2026-02-27T16:00:00Z",
+      "status": "Proposed"
+    },
+    {
+      "temp_id": "2026-02-run-op-0007",
+      "order_id": "po_002",
+      "routing_operation_id": "ro_coat",
+      "work_center_id": "wc_coating",
+      "machine_id": "coat_01",
+      "qty": 300,
+      "start": "2026-02-28T08:00:00Z",
+      "end":   "2026-02-28T16:00:00Z",
+      "status": "Proposed"
+    }
+  ],
+  "infeasibilities": []
+}

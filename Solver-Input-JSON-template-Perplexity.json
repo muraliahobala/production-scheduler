@@ -1,0 +1,57 @@
+{
+  "data": {
+    "horizon": 480,
+    "machines": [
+      { "id": "M1", "name": "Cutting Machine 1" },
+      { "id": "M2", "name": "Assembly Line A" }
+    ],
+    "jobs": [
+      {
+        "id": "J1",
+        "due_date": 420,
+        "priority": 1,
+        "operations": [
+          {
+            "id": "J1-OP1",
+            "name": "Cut",
+            "processing_time": 60,
+            "machine_ids": ["M1"],
+            "earliest_start": 0
+          },
+          {
+            "id": "J1-OP2",
+            "name": "Assemble",
+            "processing_time": 120,
+            "machine_ids": ["M2"],
+            "earliest_start": 0
+          }
+        ]
+      },
+      {
+        "id": "J2",
+        "due_date": 300,
+        "priority": 2,
+        "operations": [
+          {
+            "id": "J2-OP1",
+            "name": "Cut",
+            "processing_time": 90,
+            "machine_ids": ["M1"],
+            "earliest_start": 0
+          },
+          {
+            "id": "J2-OP2",
+            "name": "Assemble",
+            "processing_time": 60,
+            "machine_ids": ["M2"],
+            "earliest_start": 0
+          }
+        ]
+      }
+    ],
+    "parameters": {
+      "objective": "minimize_makespan",
+      "time_limit_seconds": 5
+    }
+  }
+}

@@ -1,0 +1,147 @@
+{
+  "run_id": "2026-02-4week-plan",
+  "horizon": {
+    "start": "2026-02-17T00:00:00Z",
+    "end":   "2026-03-17T00:00:00Z"
+  },
+  "settings": {
+    "objective": "minimize_lateness"
+  },
+
+  "products": [
+    {
+      "product_id": "prod_1",
+      "code": "P-1001",
+      "name": "Gear Shaft",
+      "default_batch_size": 50,
+      "standard_pack_size": 10
+    }
+  ],
+
+  "work_centers": [
+    {
+      "work_center_id": "wc_machining",
+      "code": "MACH",
+      "name": "Machining",
+      "type": "Machining",
+      "daily_capacity_hours": 8
+    },
+    {
+      "work_center_id": "wc_heattreat",
+      "code": "HT",
+      "name": "Heat Treatment",
+      "type": "HeatTreatment",
+      "daily_capacity_hours": 8
+    },
+    {
+      "work_center_id": "wc_coating",
+      "code": "COAT",
+      "name": "Coating",
+      "type": "Coating",
+      "daily_capacity_hours": 8
+    }
+  ],
+
+  "machines": [
+    {
+      "machine_id": "mach_01",
+      "code": "MC-01",
+      "name": "Machining Centre 01",
+      "work_center_id": "wc_machining",
+      "daily_capacity_hours": 8,
+      "is_active": true
+    },
+    {
+      "machine_id": "mach_02",
+      "code": "MC-02",
+      "name": "Machining Centre 02",
+      "work_center_id": "wc_machining",
+      "daily_capacity_hours": 8,
+      "is_active": true
+    },
+    {
+      "machine_id": "oven_01",
+      "code": "OV-01",
+      "name": "Heat Treatment Oven 01",
+      "work_center_id": "wc_heattreat",
+      "daily_capacity_hours": 8,
+      "is_active": true
+    },
+    {
+      "machine_id": "coat_01",
+      "code": "CT-01",
+      "name": "Coating Line 01",
+      "work_center_id": "wc_coating",
+      "daily_capacity_hours": 8,
+      "is_active": true
+    }
+  ],
+
+  "work_center_calendars": [],
+  "machine_calendars": [],
+
+  "routings": [
+    {
+      "routing_id": "route_1001",
+      "product_id": "prod_1",
+      "code": "R-1001",
+      "is_active": true
+    }
+  ],
+
+  "routing_operations": [
+    {
+      "routing_operation_id": "ro_mach",
+      "routing_id": "route_1001",
+      "sequence": 10,
+      "work_center_id": "wc_machining",
+      "operation_name": "Machining",
+      "std_time_per_unit_hours": 0.10,
+      "min_batch_size": 10,
+      "max_batch_size": 200
+    },
+    {
+      "routing_operation_id": "ro_ht",
+      "routing_id": "route_1001",
+      "sequence": 20,
+      "work_center_id": "wc_heattreat",
+      "operation_name": "Heat Treatment",
+      "std_time_per_unit_hours": 0.20,
+      "min_batch_size": 10,
+      "max_batch_size": 200
+    },
+    {
+      "routing_operation_id": "ro_coat",
+      "routing_id": "route_1001",
+      "sequence": 30,
+      "work_center_id": "wc_coating",
+      "operation_name": "Coating",
+      "std_time_per_unit_hours": 0.15,
+      "min_batch_size": 10,
+      "max_batch_size": 200
+    }
+  ],
+
+  "production_orders": [
+    {
+      "order_id": "po_001",
+      "order_number": "PO-0001",
+      "product_id": "prod_1",
+      "required_quantity": 500,
+      "due_date": "2026-03-10T00:00:00Z",
+      "priority": "High",
+      "status": "Planned"
+    },
+    {
+      "order_id": "po_002",
+      "order_number": "PO-0002",
+      "product_id": "prod_1",
+      "required_quantity": 300,
+      "due_date": "2026-03-05T00:00:00Z",
+      "priority": "Medium",
+      "status": "Planned"
+    }
+  ],
+
+  "existing_schedule_operations": []
+}

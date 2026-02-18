@@ -1,0 +1,30 @@
+{
+  "status": "ok",
+  "objective_value": 123.0,
+  "jobs": [
+    {
+      "id": "J1",
+      "completion_time": 360,
+      "tardiness": 0,
+      "operations": [
+        {
+          "id": "J1-OP1",
+          "machine_id": "M1",
+          "start": 0,
+          "end": 60
+        },
+        {
+          "id": "J1-OP2",
+          "machine_id": "M2",
+          "start": 60,
+          "end": 180
+        }
+      ]
+    }
+  ],
+  "unassigned_jobs": [],
+  "metadata": {
+    "solve_time_seconds": 0.5,
+    "solver_status": "OPTIMAL"
+  }
+}
