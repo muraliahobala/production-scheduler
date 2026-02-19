@@ -142,7 +142,7 @@ def solve_schedule(request_data: Dict[str, Any]) -> Dict[str, Any]:
         product_id = order["product_id"]
         qty = int(order["required_quantity"])
         due_dt_raw = order["due_date"]
-        due_dt: datetime = parse_iso(due_dt_raw)
+        due_dt: datetime = parse_iso(due_dt_raw) if due_dt_raw else horizon_end
         due_hours = int((due_dt - horizon_start).total_seconds() // 3600)
         if due_hours < 0:
             due_hours = 0
