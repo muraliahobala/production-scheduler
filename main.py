@@ -10,6 +10,8 @@ from pydantic import BaseModel
 from config import get_logging_level
 from scheduler import solve_schedule
 
+from fastapi.middleware.cors import CORSMiddleware
+
 # ---------- Logging setup ----------
 logging.basicConfig(
     level=get_logging_level(),
@@ -102,6 +104,19 @@ class ScheduleInput(BaseModel):
 
 # ---------- FastAPI app with logging middleware ----------
 app = FastAPI(title="Production Scheduler API")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "https://apps.knack.com",  # ← Knack
+        "http://localhost:3000",   # ← Local dev
+        "*"                        # ← Development only (remove in prod)
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
