@@ -66,8 +66,8 @@ def solve_schedule(request_data: Dict[str, Any]) -> Dict[str, Any]:
 
     # ----- Extract input -----
     horizon_raw = request_data["horizon"]
-    horizon_start: datetime = horizon_raw["start"]
-    horizon_end: datetime = horizon_raw["end"]
+    horizon_start: datetime = parse_iso(horizon_raw["start"])
+    horizon_end: datetime = parse_iso(horizon_raw["end"])
 
     work_centers = request_data["work_centers"]
     machines_raw = request_data["machines"]
@@ -141,10 +141,12 @@ def solve_schedule(request_data: Dict[str, Any]) -> Dict[str, Any]:
         order_id = order["order_id"]
         product_id = order["product_id"]
         qty = int(order["required_quantity"])
-        due_dt: datetime = order["due_date"]
+        due_dt_raw = order["due_date"]
+        due_dt: datetime = parse_iso(due_dt_raw)
         due_hours = int((due_dt - horizon_start).total_seconds() // 3600)
         if due_hours < 0:
             due_hours = 0
+
 
         routing_id = routing_by_product.get(product_id)
         if routing_id is None:
@@ -361,7 +363,7 @@ def solve_schedule(request_data: Dict[str, Any]) -> Dict[str, Any]:
                     "order_id": order_id,
                     "required_quantity": qty,
                     "scheduled_quantity": qty,
-                    "due_date": due_dt.isoformat().replace("+00:00", "Z"),
+                    "due_date": due_by_order[order_id].isoformat().replace("+00:00", "Z"),
                     "completion_time": comp_dt.isoformat().replace("+00:00", "Z"),
                     "lateness_hours": lat_h,
                     "is_on_time": is_on_time,
@@ -374,7 +376,7 @@ def solve_schedule(request_data: Dict[str, Any]) -> Dict[str, Any]:
                     "order_id": order_id,
                     "required_quantity": qty,
                     "scheduled_quantity": 0,
-                    "due_date": due_dt.isoformat().replace("+00:00", "Z"),
+                    "due_date": due_by_order[order_id].isoformat().replace("+00:00", "Z"),
                     "completion_time": None,
                     "lateness_hours": None,
                     "is_on_time": False,
