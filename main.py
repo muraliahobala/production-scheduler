@@ -133,29 +133,37 @@ async def log_requests(request: Request, call_next):
     return response
 
 @app.post("/optimize-schedule")
-async def optimize_schedule(payload: ScheduleInput, request: Request):
+async def optimize_schedule(request: Request):
     """
-    Accepts the JSON exactly as you showed from Knack and calls the solver.
+    Accepts raw JSON from Knack (bypasses Pydantic validation) and calls CP-SAT solver.
     """
-    logger.info(
-        f"Scheduling run '{payload.run_id}': "
-        f"{len(payload.production_orders)} orders, "
-        f"{len(payload.machines)} machines, "
-        f"horizon {payload.horizon.start.date()} → {payload.horizon.end.date()}"
-    )
-    
-    # Convert to a plain dict to pass into solve_schedule
-    data = payload.dict()
-    result = solve_schedule(data)
-    
-    logger.info(
-        f"Scheduling '{payload.run_id}' COMPLETE: "
-        f"status={result['status']} "
-        f"ops={len(result.get('schedule_operations', []))} "
-        f"orders_on_time={result['summary']['orders_on_time']}/{result['summary']['total_orders']}"
-    )
-    
-    return result
+    try:
+        # Accept ANY JSON - no validation errors for Knack
+        payload = await request.json()
+        logger.info(f"📥 Raw payload keys: {list(payload.keys())}")
+        logger.info(f"Scheduling run '{payload.get('run_id', 'unknown')}': "
+                   f"{len(payload.get('production_orders', []))} orders, "
+                   f"{len(payload.get('machines', []))} machines")
+        
+        result = solve_schedule(payload)
+        
+        logger.info(
+            f"Scheduling '{payload.get('run_id', 'unknown')}' COMPLETE: "
+            f"status={result['status']} "
+            f"ops={len(result.get('schedule_operations', []))} "
+            f"orders_on_time={result['summary']['orders_on_time']}/{result['summary']['total_orders']}"
+        )
+        
+        return result
+        
+    except Exception as e:
+        logger.error(f"❌ Endpoint error: {str(e)}")
+        return {
+            "run_id": "error",
+            "status": "error", 
+            "error": str(e),
+            "message": "Invalid JSON or server error"
+        }
 
 @app.get("/health")
 async def health_check():
