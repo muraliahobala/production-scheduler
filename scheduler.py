@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Tuple
+from ortools.sat.python import cp_model
 import logging
 from config import get_solver_defaults, get_logging_level
 
@@ -59,50 +60,29 @@ def date_range_days(start: datetime, end: datetime) -> int:
 # ---------- Main entry ----------
 
 def solve_schedule(request_data: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    For now: a simple, deterministic scheduler that:
-      - Respects routing sequences.
-      - Assigns operations to machines in their work center.
-      - Schedules in whole-day blocks.
-      - Minimizes lateness only via greedy ordering by due_date.
-
-    Shape is ready to be replaced later by a CP-SAT model.
-    """
     logger = logging.getLogger("scheduler")
-    logger.info(f"🔄 solve_schedule START: run_id={request_data['run_id']}")
-    
-    # Log input summary
-    logger.info(
-        f"📊 INPUT: {len(request_data['production_orders'])} orders, "
-        f"{len(request_data['machines'])} machines, "
-        f"{len(request_data['routing_operations'])} routing ops"
-    )
-    
     run_id: str = request_data["run_id"]
-    horizon_raw = request_data["horizon"]
-    settings = request_data.get("settings", {})
-    objective = settings.get("objective", "minimize_lateness")
+    logger.info(f"🔄 CP-SAT solve_schedule START: run_id={run_id}")
 
-    products = request_data["products"]
+    # ----- Extract input -----
+    horizon_raw = request_data["horizon"]
+    horizon_start: datetime = horizon_raw["start"]
+    horizon_end: datetime = horizon_raw["end"]
+
     work_centers = request_data["work_centers"]
     machines_raw = request_data["machines"]
     routings = request_data["routings"]
     routing_operations_raw = request_data["routing_operations"]
     production_orders = request_data["production_orders"]
-    existing_schedule_operations = request_data.get("existing_schedule_operations", [])
 
-    logger.info(f"📊 {len(production_orders)} orders, {len(machines_raw)} machines")
+    logger.info(
+        f"📊 INPUT: {len(production_orders)} orders, "
+        f"{len(machines_raw)} machines, {len(routing_operations_raw)} routing ops"
+    )
 
-    logger.info("⚙️  Applying solver configuration")
-    solver_params = get_solver_defaults()
-    logger.info(f"Solver defaults: time={solver_params['max_time_seconds']}s, workers={solver_params['num_workers']}")
-
-    # ---------- Time discretization: days ----------
-
-    horizon_start = horizon_raw["start"]
-    horizon_end = horizon_raw["end"]
-    num_days = date_range_days(horizon_start, horizon_end)
-    if num_days <= 0:
+    # ----- Time discretization: hours -----
+    horizon_hours = int((horizon_end - horizon_start).total_seconds() // 3600)
+    if horizon_hours <= 0:
         return {
             "run_id": run_id,
             "status": "infeasible",
@@ -120,228 +100,308 @@ def solve_schedule(request_data: Dict[str, Any]) -> Dict[str, Any]:
             ],
         }
 
-    # ---------- Routing operations by routing_id ----------
-
-    routing_ops_by_routing: Dict[str, List[OperationDef]] = {}
-    for ro in routing_operations_raw:
-        rd = OperationDef(
-            routing_operation_id=ro["routing_operation_id"],
-            routing_id=ro["routing_id"],
-            sequence=ro["sequence"],
-            work_center_id=ro["work_center_id"],
-            operation_name=ro["operation_name"],
-            std_time_per_unit_hours=float(ro["std_time_per_unit_hours"]),
-            min_batch_size=int(ro["min_batch_size"]),
-            max_batch_size=int(ro["max_batch_size"]),
-        )
-        routing_ops_by_routing.setdefault(rd.routing_id, []).append(rd)
-
-    # Sort operations by sequence within each routing
-    for rid in routing_ops_by_routing:
-        routing_ops_by_routing[rid].sort(key=lambda x: x.sequence)
-
-    # ---------- Machines by work_center ----------
-
-    machines_by_wc: Dict[str, List[MachineDef]] = {}
+    # ----- Index machines by work_center -----
+    machines_by_wc: Dict[str, List[Dict[str, Any]]] = {}
     for m in machines_raw:
-        md = MachineDef(
-            machine_id=m["machine_id"],
-            work_center_id=m["work_center_id"],
-            daily_capacity_hours=float(m["daily_capacity_hours"]),
-            is_active=bool(m["is_active"]),
-        )
-        if md.is_active:
-            machines_by_wc.setdefault(md.work_center_id, []).append(md)
+        if m["is_active"]:
+            machines_by_wc.setdefault(m["work_center_id"], []).append(m)
 
-    # ---------- Routing lookup by product_id ----------
+    # ----- Routing ops per routing_id -----
+    routing_ops_by_routing: Dict[str, List[Dict[str, Any]]] = {}
+    for ro in routing_operations_raw:
+        routing_ops_by_routing.setdefault(ro["routing_id"], []).append(ro)
 
+    for rid in routing_ops_by_routing:
+        routing_ops_by_routing[rid].sort(key=lambda x: x["sequence"])
+
+    # ----- Routing per product -----
     routing_by_product: Dict[str, str] = {}
     for r in routings:
         if r["is_active"]:
             routing_by_product[r["product_id"]] = r["routing_id"]
 
-    # ---------- Simple greedy scheduling ----------
+    # ----- Build CP-SAT model -----
+    model = cp_model.CpModel()
 
-    # Sort orders by due_date (earliest first)
-    orders_sorted = sorted(
-        production_orders, key=lambda o: parse_iso(o["due_date"])
-    )
+    # Variables:
+    # For each (order, routing_operation) we create:
+    #   - start time (IntVar, in hours from horizon_start)
+    #   - end time
+    #   - interval
+    #   - assigned machine index (if multiple machines for that WC) – simplified here: 1st machine only
 
-    scheduled_ops: List[Dict[str, Any]] = []
-    order_results: List[Dict[str, Any]] = []
+    op_vars: Dict[Tuple[str, str], Dict[str, Any]] = {}
 
-    day_slot_usage: Dict[Tuple[str, str, int], float] = {}
-    # key: (work_center_id, machine_id, day_index) -> used_hours
+    # Also, for each order, define completion time and lateness
+    order_completion: Dict[str, cp_model.IntVar] = {}
+    order_lateness: Dict[str, cp_model.IntVar] = {}
 
-    temp_counter = 1
-    total_processing_hours = 0.0
-    max_lateness_hours = 0.0
-    orders_on_time = 0
-    orders_late = 0
-
-    for order in orders_sorted:
+    # Build operations
+    for order in production_orders:
         order_id = order["order_id"]
         product_id = order["product_id"]
         qty = int(order["required_quantity"])
-        due_date = order["due_date"]
+        due_dt: datetime = order["due_date"]
+        due_hours = int((due_dt - horizon_start).total_seconds() // 3600)
+        if due_hours < 0:
+            due_hours = 0
 
         routing_id = routing_by_product.get(product_id)
         if routing_id is None:
-            # No routing for this product
-            order_results.append(
-                {
-                    "order_id": order_id,
-                    "required_quantity": qty,
-                    "scheduled_quantity": 0,
-                    "due_date": order["due_date"],
-                    "completion_time": None,
-                    "lateness_hours": None,
-                    "is_on_time": False,
-                }
-            )
+            logger.warning(f"No routing for product {product_id}, order {order_id}")
             continue
 
-        ops_def = routing_ops_by_routing[routing_id]
+        ops_def = routing_ops_by_routing.get(routing_id, [])
+        if not ops_def:
+            logger.warning(f"No routing_operations for routing {routing_id}")
+            continue
 
-        # For simplicity, we schedule full quantity in one batch per op
-        current_start_time = horizon_start  # earliest possible
-        last_end_time = current_start_time
+        prev_end = None
+        last_end_vars: List[cp_model.IntVar] = []
 
-        for op_def in ops_def:
-            wc_id = op_def.work_center_id
+        for ro in ops_def:
+            ro_id = ro["routing_operation_id"]
+            wc_id = ro["work_center_id"]
+            std_time_per_unit_hours = float(ro["std_time_per_unit_hours"])
+
             machines_here = machines_by_wc.get(wc_id, [])
             if not machines_here:
-                # No machine for this work center
-                order_results.append(
-                    {
-                        "order_id": order_id,
-                        "required_quantity": qty,
-                        "scheduled_quantity": 0,
-                        "due_date": order["due_date"],
-                        "completion_time": None,
-                        "lateness_hours": None,
-                        "is_on_time": False,
-                    }
-                )
-                break
+                logger.warning(f"No machines for work_center {wc_id} (order {order_id})")
+                continue
 
-            # processing hours for this operation
-            proc_hours = op_def.std_time_per_unit_hours * qty
+            # Simplification: use the first machine in this work_center
+            machine = machines_here[0]
+            machine_id = machine["machine_id"]
 
-            # naive: schedule on first machine with space, starting after last_end_time
-            scheduled = False
-            for day_index in range(num_days):
-                day_start = horizon_start + timedelta(days=day_index)
-                day_end = day_start + timedelta(days=1)
+            # Total processing time (no batching yet)
+            proc_hours = int(round(std_time_per_unit_hours * qty))
+            if proc_hours <= 0:
+                proc_hours = 1
 
-                # respect precedence: can't start before last_end_time
-                if day_end <= last_end_time:
-                    continue
+            start = model.NewIntVar(0, horizon_hours, f"start_{order_id}_{ro_id}")
+            end = model.NewIntVar(0, horizon_hours, f"end_{order_id}_{ro_id}")
+            interval = model.NewIntervalVar(start, proc_hours, end, f"int_{order_id}_{ro_id}")
 
-                for mach in machines_here:
-                    key = (wc_id, mach.machine_id, day_index)
-                    used = day_slot_usage.get(key, 0.0)
-                    capacity = mach.daily_capacity_hours
-                    available = capacity - used
+            op_vars[(order_id, ro_id)] = {
+                "start": start,
+                "end": end,
+                "interval": interval,
+                "order_id": order_id,
+                "routing_operation_id": ro_id,
+                "work_center_id": wc_id,
+                "machine_id": machine_id,
+                "qty": qty,
+                "proc_hours": proc_hours,
+            }
 
-                    if available >= proc_hours:
-                        # schedule full operation on this day/machine
-                        start_time = max(day_start, last_end_time)
-                        end_time = start_time + timedelta(hours=proc_hours)
+            # Precedence within the order
+            if prev_end is not None:
+                model.Add(start >= prev_end)
+            prev_end = end
+            last_end_vars.append(end)
 
-                        day_slot_usage[key] = used + proc_hours
-                        scheduled = True
-                        last_end_time = end_time
-                        total_processing_hours += proc_hours
+        if last_end_vars:
+            # Completion time = last operation end
+            comp = model.NewIntVar(0, horizon_hours, f"completion_{order_id}")
+            model.AddMaxEquality(comp, last_end_vars)
+            order_completion[order_id] = comp
 
-                        temp_id = f"{run_id}-op-{temp_counter:04d}"
-                        temp_counter += 1
+            # Lateness = max(0, completion - due_hours)
+            lat = model.NewIntVar(0, horizon_hours * 2, f"lateness_{order_id}")
+            model.Add(lat >= comp - due_hours)
+            model.Add(lat >= 0)
+            order_lateness[order_id] = lat
 
-                        scheduled_ops.append(
-                            {
-                                "temp_id": temp_id,
-                                "order_id": order_id,
-                                "routing_operation_id": op_def.routing_operation_id,
-                                "work_center_id": wc_id,
-                                "machine_id": mach.machine_id,
-                                "qty": qty,
-                                "start": start_time.isoformat().replace("+00:00", "Z"),
-                                "end": end_time.isoformat().replace("+00:00", "Z"),
-                                "status": "Proposed",
-                            }
-                        )
-                        break
+    # Machine no-overlap constraints
+    # Group intervals by machine_id
+    intervals_by_machine: Dict[str, List[cp_model.IntervalVar]] = {}
+    for key, ov in op_vars.items():
+        mid = ov["machine_id"]
+        intervals_by_machine.setdefault(mid, []).append(ov["interval"])
 
-                if scheduled:
-                    break
+    for mid, intervals in intervals_by_machine.items():
+        model.AddNoOverlap(intervals)
 
-            if not scheduled:
-                # Could not schedule this operation within horizon
-                order_results.append(
-                    {
-                        "order_id": order_id,
-                        "required_quantity": qty,
-                        "scheduled_quantity": 0,
-                        "due_date": order["due_date"],
-                        "completion_time": None,
-                        "lateness_hours": None,
-                        "is_on_time": False,
-                    }
-                )
-                break
+    # Objective: minimize total lateness (sum over orders)
+    if order_lateness:
+        model.Minimize(sum(order_lateness.values()))
+    else:
+        # No schedulable orders
+        logger.warning("No schedulable orders found; returning infeasible")
+        return {
+            "run_id": run_id,
+            "status": "infeasible",
+            "summary": {
+                "total_orders": len(production_orders),
+                "orders_on_time": 0,
+                "orders_late": len(production_orders),
+                "max_lateness_hours": None,
+                "total_processing_hours": 0,
+            },
+            "order_results": [],
+            "schedule_operations": [],
+            "infeasibilities": [],
+        }
 
-        else:
-            # All operations scheduled for this order
-            completion_time = last_end_time
-            lateness = max(0.0, hours_between(due_date, completion_time))
-            max_lateness_hours = max(max_lateness_hours, lateness)
-            is_on_time = lateness == 0.0
+    # ----- Solver -----
+    solver = cp_model.CpSolver()
+    solver_params = get_solver_defaults()
+    solver.max_time_in_seconds = solver_params["max_time_seconds"]
+    solver.num_search_workers = solver_params["num_workers"]
+    solver.relative_gap_limit = solver_params["relative_gap"]
+    solver.log_search_progress = solver_params["log_search"]
+
+    logger.info(
+        f"⚙️  Solver params: time={solver.max_time_in_seconds}s, "
+        f"workers={solver.num_search_workers}, "
+        f"rel_gap={solver.relative_gap_limit}"
+    )
+
+    status = solver.Solve(model)
+
+    status_map = {
+        cp_model.OPTIMAL: "OPTIMAL",
+        cp_model.FEASIBLE: "FEASIBLE",
+        cp_model.INFEASIBLE: "INFEASIBLE",
+        cp_model.MODEL_INVALID: "MODEL_INVALID",
+        cp_model.UNKNOWN: "UNKNOWN",
+    }
+    status_str = status_map.get(status, "UNKNOWN")
+
+    logger.info(
+        f"🧮 CP-SAT finished: status={status_str}, "
+        f"obj={solver.ObjectiveValue() if status in (cp_model.OPTIMAL, cp_model.FEASIBLE) else 'NA'}, "
+        f"time={solver.WallTime():.2f}s"
+    )
+
+    if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+        return {
+            "run_id": run_id,
+            "status": "infeasible",
+            "summary": {
+                "total_orders": len(production_orders),
+                "orders_on_time": 0,
+                "orders_late": len(production_orders),
+                "max_lateness_hours": None,
+                "total_processing_hours": 0,
+            },
+            "order_results": [],
+            "schedule_operations": [],
+            "infeasibilities": [],
+        }
+
+    # ----- Build output -----
+    schedule_operations: List[Dict[str, Any]] = []
+    total_processing_hours = 0.0
+    orders_on_time = 0
+    orders_late = 0
+    max_lateness_hours = 0.0
+    order_results: List[Dict[str, Any]] = []
+
+    # Map order_id -> due_date
+    due_by_order: Dict[str, datetime] = {
+        o["order_id"]: o["due_date"] for o in production_orders
+    }
+    qty_by_order: Dict[str, int] = {
+        o["order_id"]: int(o["required_quantity"]) for o in production_orders
+    }
+
+    temp_counter = 1
+
+    # Build schedule_operations from op_vars
+    for (order_id, ro_id), ov in op_vars.items():
+        start_h = solver.Value(ov["start"])
+        end_h = solver.Value(ov["end"])
+        machine_id = ov["machine_id"]
+        wc_id = ov["work_center_id"]
+        qty = ov["qty"]
+        proc_h = ov["proc_hours"]
+        total_processing_hours += proc_h
+
+        start_dt = horizon_start + timedelta(hours=start_h)
+        end_dt = horizon_start + timedelta(hours=end_h)
+
+        temp_id = f"{run_id}-op-{temp_counter:04d}"
+        temp_counter += 1
+
+        schedule_operations.append(
+            {
+                "temp_id": temp_id,
+                "order_id": order_id,
+                "routing_operation_id": ro_id,
+                "work_center_id": wc_id,
+                "machine_id": machine_id,
+                "qty": qty,
+                "start": start_dt.isoformat().replace("+00:00", "Z"),
+                "end": end_dt.isoformat().replace("+00:00", "Z"),
+                "status": "Proposed",
+            }
+        )
+
+    # Build per-order results
+    for order in production_orders:
+        order_id = order["order_id"]
+        qty = qty_by_order[order_id]
+        due_dt = due_by_order[order_id]
+
+        if order_id in order_completion:
+            comp_h = solver.Value(order_completion[order_id])
+            comp_dt = horizon_start + timedelta(hours=comp_h)
+            lat_h = float(solver.Value(order_lateness[order_id]))
+            is_on_time = lat_h <= 0.0
             if is_on_time:
                 orders_on_time += 1
             else:
                 orders_late += 1
+            if lat_h > max_lateness_hours:
+                max_lateness_hours = lat_h
 
             order_results.append(
                 {
                     "order_id": order_id,
                     "required_quantity": qty,
                     "scheduled_quantity": qty,
-                    "due_date": order["due_date"],
-                    "completion_time": completion_time.isoformat().replace(
-                        "+00:00", "Z"
-                    ),
-                    "lateness_hours": lateness,
+                    "due_date": due_dt.isoformat().replace("+00:00", "Z"),
+                    "completion_time": comp_dt.isoformat().replace("+00:00", "Z"),
+                    "lateness_hours": lat_h,
                     "is_on_time": is_on_time,
                 }
             )
-
-    # ---------- Build output JSON ----------
-
-    status = "feasible" if orders_on_time + orders_late > 0 else "infeasible"
+        else:
+            # Not scheduled (no routing or machines)
+            order_results.append(
+                {
+                    "order_id": order_id,
+                    "required_quantity": qty,
+                    "scheduled_quantity": 0,
+                    "due_date": due_dt.isoformat().replace("+00:00", "Z"),
+                    "completion_time": None,
+                    "lateness_hours": None,
+                    "is_on_time": False,
+                }
+            )
 
     summary = {
         "total_orders": len(production_orders),
         "orders_on_time": orders_on_time,
         "orders_late": orders_late,
-        "max_lateness_hours": max_lateness_hours if orders_on_time + orders_late > 0 else None,
+        "max_lateness_hours": max_lateness_hours if (orders_on_time + orders_late) > 0 else None,
         "total_processing_hours": total_processing_hours,
     }
 
     result: Dict[str, Any] = {
         "run_id": run_id,
-        "status": status,
+        "status": "feasible" if schedule_operations else "infeasible",
         "summary": summary,
         "order_results": order_results,
-        "schedule_operations": scheduled_ops,
+        "schedule_operations": schedule_operations,
         "infeasibilities": [],
     }
 
-#    logger.info(
-#        f"✅ solve_schedule COMPLETE: status={status}, "
-#        f"objective={solver.ObjectiveValue() if status in (cp_model.OPTIMAL, cp_model.FEASIBLE) else 'N/A'}, "
-#        f"time={solver.WallTime():.2f}s"
-#    )
-    
-    logger.info(f"🏁 Scheduling COMPLETE: status={result['status']}, ops={len(result.get('schedule_operations', []))}, hours={result['summary']['total_processing_hours']}")
+    logger.info(
+        f"🏁 CP-SAT schedule COMPLETE: status={result['status']}, "
+        f"ops={len(schedule_operations)}, "
+        f"orders_on_time={orders_on_time}/{len(production_orders)}"
+    )
 
     return result
