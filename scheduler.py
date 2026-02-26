@@ -300,9 +300,10 @@ def solve_schedule(request_data: Dict[str, Any]) -> Dict[str, Any]:
     max_lateness_hours = 0.0
     order_results: List[Dict[str, Any]] = []
 
-    # Map order_id -> due_date
+    # Map order_id -> PARSED due_date (datetime objects)
     due_by_order: Dict[str, datetime] = {
-        o["order_id"]: o["due_date"] for o in production_orders
+        o["order_id"]: parse_iso(o["due_date"]) if o.get("due_date") else None 
+        for o in production_orders
     }
     qty_by_order: Dict[str, int] = {
         o["order_id"]: int(o["required_quantity"]) for o in production_orders
@@ -363,7 +364,7 @@ def solve_schedule(request_data: Dict[str, Any]) -> Dict[str, Any]:
                     "order_id": order_id,
                     "required_quantity": qty,
                     "scheduled_quantity": qty,
-                    "due_date": due_by_order[order_id].isoformat().replace("+00:00", "Z"),
+                    "due_date": due_by_order[order_id].isoformat().replace("+00:00", "Z") if due_by_order[order_id] else None,  # ✅ Safe
                     "completion_time": comp_dt.isoformat().replace("+00:00", "Z"),
                     "lateness_hours": lat_h,
                     "is_on_time": is_on_time,
@@ -376,7 +377,7 @@ def solve_schedule(request_data: Dict[str, Any]) -> Dict[str, Any]:
                     "order_id": order_id,
                     "required_quantity": qty,
                     "scheduled_quantity": 0,
-                    "due_date": due_by_order[order_id].isoformat().replace("+00:00", "Z"),
+                    "due_date": due_by_order[order_id].isoformat().replace("+00:00", "Z") if due_by_order[order_id] else None,  # ✅ Safe
                     "completion_time": None,
                     "lateness_hours": None,
                     "is_on_time": False,
