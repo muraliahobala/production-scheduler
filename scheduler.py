@@ -347,6 +347,7 @@ def solve_schedule(request_data: Dict[str, Any]) -> Dict[str, Any]:
         usage["remaining_hours"] = usage["total_capacity_hours"] - usage["consumed_hours"]
         usage["utilization_pct"] = (usage["consumed_hours"] / usage["total_capacity_hours"] * 100) if usage["total_capacity_hours"] > 0 else 0
         usage["work_center_id"] = machine_def.get("work_center_id", "")
+        usage["machine_name"] = machine_def.get("machine_id", "")
         
         # 🔥 Hours consumed per order/product combination
         order_product_hours = []
