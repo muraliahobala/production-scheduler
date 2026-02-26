@@ -1,4 +1,4 @@
-# scheduler.py
+# scheduler.py - FULL ENHANCED VERSION
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ class OperationDef:
     routing_id: str          
     sequence: int
     work_center_id: str
-    operation_name: str    # ← ADD THIS LINE
+    operation_name: str
     std_time_per_unit_hours: float
     min_batch_size: int
     max_batch_size: int
@@ -29,10 +29,7 @@ class MachineDef:
     daily_capacity_hours: float
     is_active: bool
 
-
 # ---------- Utility functions ----------
-
-from datetime import datetime
 
 def parse_iso(dt_val) -> datetime:
     """
@@ -41,21 +38,16 @@ def parse_iso(dt_val) -> datetime:
     """
     if isinstance(dt_val, datetime):
         return dt_val
-    # force to string in case it's something else
     s = str(dt_val)
     return datetime.fromisoformat(s.replace("Z", "+00:00"))
-
-
 
 def hours_between(start: datetime, end: datetime) -> float:
     delta = end - start
     return delta.total_seconds() / 3600.0
 
-
 def date_range_days(start: datetime, end: datetime) -> int:
     """Number of full days from start to end (ceil)."""
     return int((end - start).days)
-
 
 # ---------- Main entry ----------
 
@@ -95,6 +87,7 @@ def solve_schedule(request_data: Dict[str, Any]) -> Dict[str, Any]:
             },
             "order_results": [],
             "schedule_operations": [],
+            "resource_utilization": [],
             "infeasibilities": [
                 {"type": "HORIZON_INVALID", "message": "Horizon start >= end"}
             ],
@@ -123,16 +116,7 @@ def solve_schedule(request_data: Dict[str, Any]) -> Dict[str, Any]:
     # ----- Build CP-SAT model -----
     model = cp_model.CpModel()
 
-    # Variables:
-    # For each (order, routing_operation) we create:
-    #   - start time (IntVar, in hours from horizon_start)
-    #   - end time
-    #   - interval
-    #   - assigned machine index (if multiple machines for that WC) – simplified here: 1st machine only
-
     op_vars: Dict[Tuple[str, str], Dict[str, Any]] = {}
-
-    # Also, for each order, define completion time and lateness
     order_completion: Dict[str, cp_model.IntVar] = {}
     order_lateness: Dict[str, cp_model.IntVar] = {}
 
@@ -146,7 +130,6 @@ def solve_schedule(request_data: Dict[str, Any]) -> Dict[str, Any]:
         due_hours = int((due_dt - horizon_start).total_seconds() // 3600)
         if due_hours < 0:
             due_hours = 0
-
 
         routing_id = routing_by_product.get(product_id)
         if routing_id is None:
@@ -171,11 +154,9 @@ def solve_schedule(request_data: Dict[str, Any]) -> Dict[str, Any]:
                 logger.warning(f"No machines for work_center {wc_id} (order {order_id})")
                 continue
 
-            # Simplification: use the first machine in this work_center
             machine = machines_here[0]
             machine_id = machine["machine_id"]
 
-            # Total processing time (no batching yet)
             proc_hours = int(round(std_time_per_unit_hours * qty))
             if proc_hours <= 0:
                 proc_hours = 1
@@ -196,26 +177,22 @@ def solve_schedule(request_data: Dict[str, Any]) -> Dict[str, Any]:
                 "proc_hours": proc_hours,
             }
 
-            # Precedence within the order
             if prev_end is not None:
                 model.Add(start >= prev_end)
             prev_end = end
             last_end_vars.append(end)
 
         if last_end_vars:
-            # Completion time = last operation end
             comp = model.NewIntVar(0, horizon_hours, f"completion_{order_id}")
             model.AddMaxEquality(comp, last_end_vars)
             order_completion[order_id] = comp
 
-            # Lateness = max(0, completion - due_hours)
             lat = model.NewIntVar(0, horizon_hours * 2, f"lateness_{order_id}")
             model.Add(lat >= comp - due_hours)
             model.Add(lat >= 0)
             order_lateness[order_id] = lat
 
     # Machine no-overlap constraints
-    # Group intervals by machine_id
     intervals_by_machine: Dict[str, List[cp_model.IntervalVar]] = {}
     for key, ov in op_vars.items():
         mid = ov["machine_id"]
@@ -224,11 +201,10 @@ def solve_schedule(request_data: Dict[str, Any]) -> Dict[str, Any]:
     for mid, intervals in intervals_by_machine.items():
         model.AddNoOverlap(intervals)
 
-    # Objective: minimize total lateness (sum over orders)
+    # Objective: minimize total lateness
     if order_lateness:
         model.Minimize(sum(order_lateness.values()))
     else:
-        # No schedulable orders
         logger.warning("No schedulable orders found; returning infeasible")
         return {
             "run_id": run_id,
@@ -242,6 +218,7 @@ def solve_schedule(request_data: Dict[str, Any]) -> Dict[str, Any]:
             },
             "order_results": [],
             "schedule_operations": [],
+            "resource_utilization": [],
             "infeasibilities": [],
         }
 
@@ -289,10 +266,11 @@ def solve_schedule(request_data: Dict[str, Any]) -> Dict[str, Any]:
             },
             "order_results": [],
             "schedule_operations": [],
+            "resource_utilization": [],
             "infeasibilities": [],
         }
 
-    # ----- Build output -----
+    # ----- 🔥 ENHANCED OUTPUT WITH RESOURCE UTILIZATION -----
     schedule_operations: List[Dict[str, Any]] = []
     total_processing_hours = 0.0
     orders_on_time = 0
@@ -300,7 +278,7 @@ def solve_schedule(request_data: Dict[str, Any]) -> Dict[str, Any]:
     max_lateness_hours = 0.0
     order_results: List[Dict[str, Any]] = []
 
-    # Map order_id -> PARSED due_date (datetime objects)
+    # Map order_id -> parsed due_date & qty
     due_by_order: Dict[str, datetime] = {
         o["order_id"]: parse_iso(o["due_date"]) if o.get("due_date") else None 
         for o in production_orders
@@ -309,9 +287,13 @@ def solve_schedule(request_data: Dict[str, Any]) -> Dict[str, Any]:
         o["order_id"]: int(o["required_quantity"]) for o in production_orders
     }
 
-    temp_counter = 1
+    # 🔥 ENHANCED: Track hours by order/product per machine
+    resource_utilization: Dict[str, Dict[str, Any]] = {}
+    machine_usage: Dict[str, Dict[Tuple[str, str], float]] = {}
+    horizon_days = (horizon_end - horizon_start).days + 1
 
-    # Build schedule_operations from op_vars
+    # Build schedule_operations AND track resource usage
+    temp_counter = 1
     for (order_id, ro_id), ov in op_vars.items():
         start_h = solver.Value(ov["start"])
         end_h = solver.Value(ov["end"])
@@ -321,37 +303,72 @@ def solve_schedule(request_data: Dict[str, Any]) -> Dict[str, Any]:
         proc_h = ov["proc_hours"]
         total_processing_hours += proc_h
 
+        # 🔥 Track hours by (order, product) combination
+        ro_data = next((ro for ro in routing_operations_raw if ro["routing_operation_id"] == ro_id), {})
+        routing_data = next((r for r in routings if r["routing_id"] == ro_data.get("routing_id", "")), {})
+        product_id = routing_data.get("product_id", "Unknown")
+        
+        usage_key = (order_id, product_id)
+        
+        if machine_id not in machine_usage:
+            machine_usage[machine_id] = {}
+        if usage_key not in machine_usage[machine_id]:
+            machine_usage[machine_id][usage_key] = 0.0
+        machine_usage[machine_id][usage_key] += proc_h
+
         start_dt = horizon_start + timedelta(hours=start_h)
         end_dt = horizon_start + timedelta(hours=end_h)
 
         temp_id = f"{run_id}-op-{temp_counter:04d}"
         temp_counter += 1
 
-        schedule_operations.append(
-            {
-                "temp_id": temp_id,
-                "order_id": order_id,
-                "routing_operation_id": ro_id,
-                "work_center_id": wc_id,
-                "machine_id": machine_id,
-                "qty": qty,
-                "start": start_dt.isoformat().replace("+00:00", "Z"),
-                "end": end_dt.isoformat().replace("+00:00", "Z"),
-                "status": "Proposed",
-            }
-        )
+        schedule_operations.append({
+            "temp_id": temp_id,
+            "order_id": order_id,
+            "routing_operation_id": ro_id,
+            "work_center_id": wc_id,
+            "machine_id": machine_id,  # ✅ INCLUDED
+            "qty": qty,
+            "start": start_dt.isoformat().replace("+00:00", "Z"),
+            "end": end_dt.isoformat().replace("+00:00", "Z"),
+            "duration_hours": float(end_h - start_h),
+            "status": "Proposed",
+        })
 
-    # Build per-order results
-    for order in production_orders:
-        order_id = order["order_id"]
+        # Initialize resource tracking
+        if machine_id not in resource_utilization:
+            resource_utilization[machine_id] = {"consumed_hours": 0.0}
+        resource_utilization[machine_id]["consumed_hours"] += proc_h
+
+    # 🔥 FINAL RESOURCE UTILIZATION WITH HOURS PER ORDER/PRODUCT
+    for machine_id, usage in resource_utilization.items():
+        machine_def = next((m for m in machines_raw if m["machine_id"] == machine_id), {})
+        usage["total_capacity_hours"] = machine_def.get("daily_capacity_hours", 0) * horizon_days
+        usage["remaining_hours"] = usage["total_capacity_hours"] - usage["consumed_hours"]
+        usage["utilization_pct"] = (usage["consumed_hours"] / usage["total_capacity_hours"] * 100) if usage["total_capacity_hours"] > 0 else 0
+        usage["work_center_id"] = machine_def.get("work_center_id", "")
+        
+        # 🔥 Hours consumed per order/product combination
+        order_product_hours = []
+        for (order_id, product_id), hours in machine_usage.get(machine_id, {}).items():
+            order_product_hours.append({
+                "order_id": order_id,
+                "product_id": product_id,
+                "hours_consumed": round(hours, 2)
+            })
+        usage["order_product_usage"] = order_product_hours
+
+    # Build enhanced order_results (with order start/end times)
+    for order_id in qty_by_order:
         qty = qty_by_order[order_id]
         due_dt = due_by_order[order_id]
-
+        
         if order_id in order_completion:
             comp_h = solver.Value(order_completion[order_id])
             comp_dt = horizon_start + timedelta(hours=comp_h)
             lat_h = float(solver.Value(order_lateness[order_id]))
             is_on_time = lat_h <= 0.0
+            
             if is_on_time:
                 orders_on_time += 1
             else:
@@ -359,30 +376,36 @@ def solve_schedule(request_data: Dict[str, Any]) -> Dict[str, Any]:
             if lat_h > max_lateness_hours:
                 max_lateness_hours = lat_h
 
-            order_results.append(
-                {
-                    "order_id": order_id,
-                    "required_quantity": qty,
-                    "scheduled_quantity": qty,
-                    "due_date": due_by_order[order_id].isoformat().replace("+00:00", "Z") if due_by_order[order_id] else None,  # ✅ Safe
-                    "completion_time": comp_dt.isoformat().replace("+00:00", "Z"),
-                    "lateness_hours": lat_h,
-                    "is_on_time": is_on_time,
-                }
-            )
+            # Find first/last operation for order start/end
+            order_ops = [op for op in schedule_operations if op["order_id"] == order_id]
+            order_start = min((op["start"] for op in order_ops), default=None) if order_ops else None
+            order_end = max((op["end"] for op in order_ops), default=None) if order_ops else None
+
+            order_results.append({
+                "order_id": order_id,
+                "required_quantity": qty,
+                "scheduled_quantity": qty,
+                "due_date": due_dt.isoformat().replace("+00:00", "Z") if due_dt else None,
+                "order_start": order_start,      # ✅ Order start time
+                "order_end": order_end,          # ✅ Order end time
+                "completion_time": comp_dt.isoformat().replace("+00:00", "Z"),
+                "lateness_hours": lat_h,
+                "is_on_time": is_on_time,
+                "operations_count": len(order_ops)
+            })
         else:
-            # Not scheduled (no routing or machines)
-            order_results.append(
-                {
-                    "order_id": order_id,
-                    "required_quantity": qty,
-                    "scheduled_quantity": 0,
-                    "due_date": due_by_order[order_id].isoformat().replace("+00:00", "Z") if due_by_order[order_id] else None,  # ✅ Safe
-                    "completion_time": None,
-                    "lateness_hours": None,
-                    "is_on_time": False,
-                }
-            )
+            order_results.append({
+                "order_id": order_id,
+                "required_quantity": qty,
+                "scheduled_quantity": 0,
+                "due_date": due_dt.isoformat().replace("+00:00", "Z") if due_dt else None,
+                "order_start": None,
+                "order_end": None,
+                "completion_time": None,
+                "lateness_hours": None,
+                "is_on_time": False,
+                "operations_count": 0
+            })
 
     summary = {
         "total_orders": len(production_orders),
@@ -390,21 +413,25 @@ def solve_schedule(request_data: Dict[str, Any]) -> Dict[str, Any]:
         "orders_late": orders_late,
         "max_lateness_hours": max_lateness_hours if (orders_on_time + orders_late) > 0 else None,
         "total_processing_hours": total_processing_hours,
+        "total_operations": len(schedule_operations),
+        "avg_utilization_pct": sum(u["utilization_pct"] for u in resource_utilization.values()) / max(1, len(resource_utilization))
     }
 
     result: Dict[str, Any] = {
         "run_id": run_id,
         "status": "feasible" if schedule_operations else "infeasible",
         "summary": summary,
-        "order_results": order_results,
-        "schedule_operations": schedule_operations,
+        "order_results": order_results,              # ✅ 1️⃣ Orders w/ start/end times
+        "schedule_operations": schedule_operations,  # ✅ 2️⃣ Operations w/ machine_id
+        "resource_utilization": list(resource_utilization.values()),  # ✅ 3️⃣ Hours per order/product
         "infeasibilities": [],
     }
 
     logger.info(
-        f"🏁 CP-SAT schedule COMPLETE: status={result['status']}, "
-        f"ops={len(schedule_operations)}, "
-        f"orders_on_time={orders_on_time}/{len(production_orders)}"
+        f"🏁 CP-SAT COMPLETE: {result['status']}, "
+        f"{len(schedule_operations)} ops, "
+        f"{orders_on_time}/{len(production_orders)} on-time, "
+        f"avg util {summary['avg_utilization_pct']:.1f}%"
     )
 
     return result
