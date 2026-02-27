@@ -190,8 +190,9 @@ async def save_knack_schedule(data: Dict[str, Any]):
 
         headers = {
             "X-Knack-Application-Id": app_id,
-            "X-Knack-Application-Token": api_token,
+            "X-Knack-REST-API-Key": api_token,
             "Content-Type": "application/json",
+            "User-Agent": "ProductionScheduler/1.0"
         }
 
         # TODO: replace these with your real object IDs
@@ -201,7 +202,7 @@ async def save_knack_schedule(data: Dict[str, Any]):
 
         # 1️⃣ Save schedule run
         run_payload = {
-            "field_117": run_id,
+            "field_128": run_id,
             "field_131": status,
             "field_132": summary.get("total_orders", 0),
             "field_133": summary.get("orders_on_time", 0),
