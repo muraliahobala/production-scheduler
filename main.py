@@ -270,38 +270,3 @@ async def health_check():
     return {"status": "healthy", "timestamp": datetime.utcnow().isoformat() + "Z"}
 
 logger.info("API ready at http://127.0.0.1:8000/docs")
-
-@app.post("/debug-knack-fields")
-async def debug_knack_fields():
-    """DEBUG: Test exact production payload on object_13"""
-    app_id = os.getenv("KNACK_APP_ID")
-    api_token = os.getenv("KNACK_API_TOKEN")
-    
-    headers = {
-        "X-Knack-Application-Id": app_id,
-        "X-Knack-REST-API-Key": api_token,
-        "Content-Type": "application/json",
-    }
-    
-    # EXACT production payload that's failing
-    payload = {
-        "field_128": "debug-run-123",
-        "field_131": "test",
-        "field_132": 5,
-        "field_133": 3,
-        "field_134": 10
-    }
-    
-    r = requests.post(
-        "https://api.knack.com/v1/objects/object_13/records",
-        json=payload,
-        headers=headers,
-        timeout=10
-    )
-    
-    return {
-        "status_code": r.status_code,
-        "response": r.text[:500],
-        "headers_sent": headers,
-        "fields_tried": list(payload.keys())
-    }
