@@ -2,15 +2,17 @@
 import logging
 import time
 from datetime import datetime
-from typing import List, Optional
+from typing import List, Optional, Dict, Any  # ← add Dict, Any
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, HTTPException  # ← add HTTPException
 from pydantic import BaseModel
 
 from config import get_logging_level
 from scheduler import solve_schedule
 
 from fastapi.middleware.cors import CORSMiddleware
+import os
+import requests  # ← for server-side HTTP calls to Knack
 
 # ---------- Logging setup ----------
 logging.basicConfig(
@@ -108,9 +110,9 @@ app = FastAPI(title="Production Scheduler API")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "https://apps.knack.com",  # ← Knack
-        "http://localhost:3000",   # ← Local dev
-        "*"                        # ← Development only (remove in prod)
+        "https://apps.knack.com",
+        "http://localhost:3000",
+        "*"
     ],
     allow_credentials=True,
     allow_methods=["*"],
@@ -121,11 +123,12 @@ app.add_middleware(
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
     start_time = time.time()
-    logger.info(f"📥 REQUEST: {request.method} {request.url.path} (run_id: {request.query_params.get('run_id', 'unknown')})")
-    
+    logger.info(
+        f"📥 REQUEST: {request.method} {request.url.path} "
+        f"(run_id: {request.query_params.get('run_id', 'unknown')})"
+    )
     response = await call_next(request)
     process_time = time.time() - start_time
-    
     logger.info(
         f"📤 RESPONSE: {request.method} {request.url.path} "
         f"status={response.status_code} time={process_time:.2f}s"
@@ -138,32 +141,128 @@ async def optimize_schedule(request: Request):
     Accepts raw JSON from Knack (bypasses Pydantic validation) and calls CP-SAT solver.
     """
     try:
-        # Accept ANY JSON - no validation errors for Knack
         payload = await request.json()
         logger.info(f"📥 Raw payload keys: {list(payload.keys())}")
-        logger.info(f"Scheduling run '{payload.get('run_id', 'unknown')}': "
-                   f"{len(payload.get('production_orders', []))} orders, "
-                   f"{len(payload.get('machines', []))} machines")
-        
+        logger.info(
+            f"Scheduling run '{payload.get('run_id', 'unknown')}': "
+            f"{len(payload.get('production_orders', []))} orders, "
+            f"{len(payload.get('machines', []))} machines"
+        )
         result = solve_schedule(payload)
-        
         logger.info(
             f"Scheduling '{payload.get('run_id', 'unknown')}' COMPLETE: "
             f"status={result['status']} "
             f"ops={len(result.get('schedule_operations', []))} "
-            f"orders_on_time={result['summary']['orders_on_time']}/{result['summary']['total_orders']}"
+            f"orders_on_time={result['summary']['orders_on_time']}/"
+            f"{result['summary']['total_orders']}"
         )
-        
         return result
-        
+
     except Exception as e:
         logger.error(f"❌ Endpoint error: {str(e)}")
         return {
             "run_id": "error",
-            "status": "error", 
+            "status": "error",
             "error": str(e),
-            "message": "Invalid JSON or server error"
+            "message": "Invalid JSON or server error",
         }
+
+# ---------- NEW: SAVE RESULTS TO KNACK ----------
+@app.post("/save-knack-schedule")
+async def save_knack_schedule(data: Dict[str, Any]):
+    """
+    Save schedule results into Knack objects (runs, operations, utilization).
+    This runs server-side, so no CORS issues.
+    """
+    try:
+        run_id = data.get("run_id")
+        status = data.get("status")
+        summary = data.get("summary", {})
+        schedule_operations = data.get("schedule_operations", [])
+        resource_utilization = data.get("resource_utilization", [])
+
+        logger.info(f"💾 Saving schedule '{run_id}' to Knack")
+
+        app_id = os.getenv("KNACK_APP_ID")
+        api_token = os.getenv("KNACK_API_TOKEN")
+        if not app_id or not api_token:
+            raise RuntimeError("KNACK_APP_ID or KNACK_API_TOKEN not set")
+
+        headers = {
+            "X-Knack-Application-Id": app_id,
+            "X-Knack-Application-Token": api_token,
+            "Content-Type": "application/json",
+        }
+
+        # TODO: replace these with your real object IDs
+        RUN_OBJECT = "object_13"   # Schedule Runs
+        OPS_OBJECT = "object_14"   # Operations
+        UTIL_OBJECT = "object_15"  # Utilization
+
+        # 1️⃣ Save schedule run
+        run_payload = {
+            "field_128": run_id,
+            "field_131": status,
+            "field_132": summary.get("total_orders", 0),
+            "field_133": summary.get("orders_on_time", 0),
+            "field_134": summary.get("total_operations", 0),
+        }
+        r = requests.post(
+            f"https://api.knack.com/v1/objects/{RUN_OBJECT}/records",
+            json=run_payload,
+            headers=headers,
+            timeout=20,
+        )
+        r.raise_for_status()
+        logger.info(f"✅ Run saved to {RUN_OBJECT}")
+
+        # 2️⃣ Save operations (limit 50)
+        for op in schedule_operations[:50]:
+            op_payload = {
+                "field_136": run_id,
+                "field_137": op.get("order_id"),
+                "field_138": op.get("routing_operation_id"),
+                "field_139": op.get("work_center_id"),
+                "field_140": op.get("machine_id"),
+                "field_141": op.get("qty"),
+                "field_142": op.get("start"),
+                "field_143": op.get("end"),
+                "field_144": op.get("duration_hours", 0),
+            }
+            r = requests.post(
+                f"https://api.knack.com/v1/objects/{OPS_OBJECT}/records",
+                json=op_payload,
+                headers=headers,
+                timeout=20,
+            )
+            r.raise_for_status()
+        logger.info(f"✅ {len(schedule_operations[:50])} ops saved to {OPS_OBJECT}")
+
+        # 3️⃣ Save utilization (limit 20)
+        for res in resource_utilization[:20]:
+            util_payload = {
+                "field_146": run_id,
+                "field_147": res.get("machine_id"),
+                "field_148": res.get("work_center_id"),
+                "field_149": res.get("total_capacity_hours", 0),
+                "field_150": res.get("consumed_hours", 0),
+                "field_151": res.get("utilization_pct", 0),
+                "field_152": str(res.get("order_product_usage", [])),
+            }
+            r = requests.post(
+                f"https://api.knack.com/v1/objects/{UTIL_OBJECT}/records",
+                json=util_payload,
+                headers=headers,
+                timeout=20,
+            )
+            r.raise_for_status()
+        logger.info(f"✅ {len(resource_utilization[:20])} resources saved to {UTIL_OBJECT}")
+
+        return {"success": True, "message": "Saved schedule to Knack"}
+
+    except Exception as e:
+        logger.error(f"❌ Knack save error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/health")
 async def health_check():
