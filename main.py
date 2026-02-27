@@ -201,7 +201,7 @@ async def save_knack_schedule(data: Dict[str, Any]):
 
         # 1️⃣ Save schedule run
         run_payload = {
-            "field_128": run_id,
+            "field_117": run_id,
             "field_131": status,
             "field_132": summary.get("total_orders", 0),
             "field_133": summary.get("orders_on_time", 0),
