@@ -269,3 +269,31 @@ async def health_check():
     return {"status": "healthy", "timestamp": datetime.utcnow().isoformat() + "Z"}
 
 logger.info("API ready at http://127.0.0.1:8000/docs")
+
+#TEST
+
+@app.get("/test-knack-auth")
+def test_knack_auth():
+    app_id = os.getenv("KNACK_APP_ID")
+    api_token = os.getenv("KNACK_API_TOKEN")
+    if not app_id or not api_token:
+        raise HTTPException(status_code=500, detail="Missing env vars")
+
+    headers = {
+        "X-Knack-Application-Id": app_id,
+        "X-Knack-REST-API-Key": api_token,
+        "Content-Type": "application/json",
+    }
+
+    test_url = "https://api.knack.com/v1/objects/object_13/records"  # replace with your real object
+    payload = {
+        "field_128": "test-run",
+        "field_131": "test",
+        "field_132": 0,
+        "field_133": 0,
+        "field_134": 0,
+    }
+
+    r = requests.post(test_url, json=payload, headers=headers)
+    return {"status_code": r.status_code, "text": r.text[:200]}
+
