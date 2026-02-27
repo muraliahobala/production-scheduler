@@ -156,6 +156,11 @@ async def optimize_schedule(request: Request):
             f"orders_on_time={result['summary']['orders_on_time']}/"
             f"{result['summary']['total_orders']}"
         )
+         # 🔥 NEW: AUTO-SAVE TO KNACK
+        logger.info("💾 Auto-saving results to Knack...")
+        save_result = save_knack_schedule(result)  # Call your save function
+        logger.info(f"✅ Save complete: {save_result}"
+        )
         return result
 
     except Exception as e:
