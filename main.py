@@ -276,7 +276,6 @@ async def health_check():
 logger.info("API ready at http://127.0.0.1:8000/docs")
 
 def lookup_production_order(order_id: str) -> dict:
-    """Lookup Production Order details from Knack"""
     try:
         app_id = os.getenv("KNACK_APP_ID")
         api_token = os.getenv("KNACK_API_TOKEN")
@@ -286,57 +285,84 @@ def lookup_production_order(order_id: str) -> dict:
         PRODUCT_FIELD = "field_98"         
         CUSTOMER_FIELD = "field_180"       
         
-        # 🔥 FIXED: Double {{ }} braces for nested JSON
         url = f"https://api.knack.com/v1/objects/{PRODUCTION_ORDERS_OBJECT}/records"
         params = {
             'filters': f'[{{"{ORDER_ID_FIELD}": {{"exact": "{order_id}"}}}}]',
             'rows_per_page': 1
         }
         
+        logger.info(f"🔍 Looking up {order_id} with params: {params}")
+        
         response = requests.get(url, headers={
             'X-Knack-Application-Id': app_id,
             'X-Knack-REST-API-Key': api_token
         }, params=params, timeout=5)
         
-        logger.info(f"Order lookup {order_id}: status={response.status_code}")
+        logger.info(f"Order lookup {order_id}: status={response.status_code}, response={response.text[:500]}")
         
         if response.ok:
-            records = response.json().get('records', [])
+            data = response.json()
+            records = data.get('records', [])
+            logger.info(f"Found {len(records)} records")
+            
             if records:
                 record = records[0]
-                logger.info(f"Found order: product={record.get(PRODUCT_FIELD)}, customer={record.get(CUSTOMER_FIELD)}")
-                return {
-                    'product_id': record[PRODUCT_FIELD]['identifier'] if record.get(PRODUCT_FIELD) else 'PROD001',
-                    'customer': record[CUSTOMER_FIELD]['identifier'] if record.get(CUSTOMER_FIELD) else 'Test Customer'
-                }
+                logger.info(f"Full record: {record}")
+                
+                # 🔥 SAFER EXTRACTION
+                product_raw = record.get(PRODUCT_FIELD, {})
+                customer_raw = record.get(CUSTOMER_FIELD, {})
+                
+                product_id = (product_raw.get('identifier') or 
+                             product_raw.get('raw') or 
+                             str(product_raw) or 'PROD001')
+                             
+                customer = (customer_raw.get('identifier') or 
+                           customer_raw.get('raw') or 
+                           str(customer_raw) or 'Test Customer')
+                           
+                logger.info(f"✅ Extracted: product_id='{product_id}', customer='{customer}'")
+                return {'product_id': product_id, 'customer': customer}
         
-        return {}
+        logger.warning(f"❌ No records found for {order_id}")
+        return {'product_id': 'PROD001', 'customer': 'Test Customer'}  # ✅ ALWAYS RETURN DEFAULT
+        
     except Exception as e:
-        logger.error(f"Order lookup failed: {e}")
-        return {}
+        logger.error(f"❌ Lookup crashed: {e}")
+        return {'product_id': 'PROD001', 'customer': 'Test Customer'}  # ✅ ALWAYS RETURN DEFAULT
 
 
 @app.post("/promise-order")
 async def promise_order(request: Request):
     try:
         payload = await request.json()
-        logger.info(f"🔮 Promise run '{payload.get('run_id', 'unknown')}': {len(payload.get('production_orders', []))} trial orders")
+        logger.info(f"🔮 Promise payload: {payload}")
         
-        # 🔥 LOOKUP PRODUCTION ORDER DETAILS SERVER-SIDE (no CORS!)
-        reference_order = payload.get('reference_order')  # "OP_ORD_002"
+        # Lookup order details
+        reference_order = payload.get('reference_order')
         if reference_order:
             order_details = lookup_production_order(reference_order)
-            logger.info(f"✅ Order lookup: {order_details}")
+            logger.info(f"✅ Order lookup result: {order_details}")
             
-            # Override payload with real data
-            trial_order = payload['production_orders'][0]
-            trial_order['product_id'] = order_details.get('product_id', trial_order.get('product_id', 'PROD001'))
-            trial_order['customer'] = order_details.get('customer', trial_order.get('customer', 'Test Customer'))
+            # ✅ ENSURE production_orders exists and has product_id
+            if 'production_orders' in payload and payload['production_orders']:
+                trial_order = payload['production_orders'][0]
+                trial_order.setdefault('product_id', order_details.get('product_id', 'PROD001'))
+                trial_order.setdefault('customer', order_details.get('customer', 'Test Customer'))
+                logger.info(f"✅ Updated trial order: {trial_order}")
+            else:
+                logger.error("❌ No production_orders in payload!")
+                return {"feasible": False, "status_message": "Missing production_orders"}
+        else:
+            logger.warning("❌ No reference_order provided")
         
         result = solve_schedule(payload, promise_mode=True)
+        logger.info(f"✅ Promise result: {result}")
         return result
         
+    except KeyError as e:
+        logger.error(f"❌ Promise KeyError: {e}")
+        return {"feasible": False, "status_message": f"Missing field: {e}"}
     except Exception as e:
         logger.error(f"❌ Promise error: {str(e)}")
         return {"feasible": False, "status_message": str(e)}
-
