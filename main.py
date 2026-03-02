@@ -274,3 +274,29 @@ async def health_check():
     return {"status": "healthy", "timestamp": datetime.utcnow().isoformat() + "Z"}
 
 logger.info("API ready at http://127.0.0.1:8000/docs")
+
+@app.post("/promise-order")
+async def promise_order(request: Request):
+    try:
+        payload = await request.json()
+        logger.info(f"🔮 Promise run '{payload.get('run_id', 'unknown')}': "
+                    f"{len(payload.get('production_orders', []))} trial orders")
+        
+        result = solve_schedule(payload, promise_mode=True)
+
+        logger.info(f"✅ Promise '{payload.get('run_id')}' COMPLETE: "
+                    f"feasible={result.get('feasible')} "
+                    f"proposed_date={result.get('proposed_date')}")
+        return result
+
+    except Exception as e:
+        logger.error(f"❌ Promise error: {str(e)}")
+        return {
+            "run_id": "promise-error",
+            "feasible": False,
+            "proposed_date": None,
+            "lateness_hours": None,
+            "status": "error",
+            "status_message": f"Error: {str(e)}",
+        }
+

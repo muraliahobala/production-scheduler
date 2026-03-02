@@ -51,7 +51,7 @@ def date_range_days(start: datetime, end: datetime) -> int:
 
 # ---------- Main entry ----------
 
-def solve_schedule(request_data: Dict[str, Any]) -> Dict[str, Any]:
+def solve_schedule(request_data: Dict[str, Any], promise_mode: bool = False) -> Dict[str, Any]:
     logger = logging.getLogger("scheduler")
     run_id: str = request_data["run_id"]
     logger.info(f"🔄 CP-SAT solve_schedule START: run_id={run_id}")
@@ -230,6 +230,10 @@ def solve_schedule(request_data: Dict[str, Any]) -> Dict[str, Any]:
     solver.relative_gap_limit = solver_params["relative_gap"]
     solver.log_search_progress = solver_params["log_search"]
 
+    if promise_mode:
+        solver.max_time_in_seconds = min(solver.max_time_in_seconds, 10.0)
+        solver.num_search_workers = min(solver.num_search_workers, 4)
+
     logger.info(
         f"⚙️  Solver params: time={solver.max_time_in_seconds}s, "
         f"workers={solver.num_search_workers}, "
@@ -254,6 +258,15 @@ def solve_schedule(request_data: Dict[str, Any]) -> Dict[str, Any]:
     )
 
     if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+        if promise_mode:
+            return {
+                "run_id": run_id,
+                "feasible": False,
+                "proposed_date": None,
+                "lateness_hours": None,
+                "status": "infeasible",
+                "status_message": "Solver could not find a schedule",
+            }
         return {
             "run_id": run_id,
             "status": "infeasible",
@@ -269,6 +282,7 @@ def solve_schedule(request_data: Dict[str, Any]) -> Dict[str, Any]:
             "resource_utilization": [],
             "infeasibilities": [],
         }
+
 
     # ----- 🔥 ENHANCED OUTPUT WITH RESOURCE UTILIZATION -----
     schedule_operations: List[Dict[str, Any]] = []
@@ -407,6 +421,55 @@ def solve_schedule(request_data: Dict[str, Any]) -> Dict[str, Any]:
                 "is_on_time": False,
                 "operations_count": 0
             })
+
+    # ----- SPECIAL COMPACT OUTPUT FOR PROMISE MODE -----
+    if promise_mode:
+        # Assume a single trial order in production_orders
+        if not production_orders:
+            return {
+                "run_id": run_id,
+                "feasible": False,
+                "proposed_date": None,
+                "lateness_hours": None,
+                "status": "infeasible",
+                "status_message": "No order provided for promise check",
+            }
+
+        trial_order = production_orders[0]
+        trial_order_id = trial_order["order_id"]
+        trial_due_dt = parse_iso(trial_order["due_date"]) if trial_order.get("due_date") else horizon_end
+        trial_due_hours = int((trial_due_dt - horizon_start).total_seconds() // 3600)
+
+        if trial_order_id not in order_completion:
+            # Could not schedule that order at all
+            return {
+                "run_id": run_id,
+                "feasible": False,
+                "proposed_date": None,
+                "lateness_hours": None,
+                "status": "infeasible",
+                "status_message": "Order cannot be scheduled within horizon",
+            }
+
+        comp_h = solver.Value(order_completion[trial_order_id])
+        comp_dt = horizon_start + timedelta(hours=comp_h)
+        lateness_h = max(0.0, float(comp_h - trial_due_hours))
+        feasible = lateness_h <= 0.0
+
+        status_msg = (
+            "Promised on requested date"
+            if feasible
+            else f"Pushed out by {lateness_h:.1f} hours"
+        )
+
+        return {
+            "run_id": run_id,
+            "feasible": feasible,
+            "proposed_date": comp_dt.isoformat().replace("+00:00", "Z"),
+            "lateness_hours": lateness_h,
+            "status": "feasible" if feasible else "late",
+            "status_message": status_msg,
+        }
 
     summary = {
         "total_orders": len(production_orders),
