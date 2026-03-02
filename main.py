@@ -282,14 +282,14 @@ def lookup_production_order(order_id: str) -> dict:
         api_token = os.getenv("KNACK_API_TOKEN")
         
         PRODUCTION_ORDERS_OBJECT = "object_3"
-        ORDER_ID_FIELD = "field_17"        # ← Order Number (OP_ORD_002)
-        PRODUCT_FIELD = "field_98"         # Product
-        CUSTOMER_FIELD = "field_180"       # Customer
+        ORDER_ID_FIELD = "field_17"        
+        PRODUCT_FIELD = "field_98"         
+        CUSTOMER_FIELD = "field_180"       
         
-        # 🔥 FIX: Filter on ORDER_ID_FIELD (field_17), not PRODUCT_FIELD
+        # 🔥 FIXED: Double {{ }} braces for nested JSON
         url = f"https://api.knack.com/v1/objects/{PRODUCTION_ORDERS_OBJECT}/records"
         params = {
-            'filters': f'[{{"{ORDER_ID_FIELD}": {{ "exact": "{order_id}" }}}]',
+            'filters': f'[{{"{ORDER_ID_FIELD}": {{"exact": "{order_id}"}}}}]',
             'rows_per_page': 1
         }
         
@@ -314,7 +314,6 @@ def lookup_production_order(order_id: str) -> dict:
     except Exception as e:
         logger.error(f"Order lookup failed: {e}")
         return {}
-
 
 
 @app.post("/promise-order")
