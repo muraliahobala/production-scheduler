@@ -275,28 +275,69 @@ async def health_check():
 
 logger.info("API ready at http://127.0.0.1:8000/docs")
 
+def lookup_production_order(order_id: str) -> dict:
+    """Lookup Production Order details from Knack (server-side, no CORS)"""
+    try:
+        app_id = os.getenv("KNACK_APP_ID")
+        api_token = os.getenv("KNACK_API_TOKEN")
+        
+        # YOUR ACTUAL FIELD/OBJECT IDs - UPDATE THESE:
+        PRODUCTION_ORDERS_OBJECT = "object_3"  # Production Orders table
+        ORDER_ID_FIELD = "field_17"           # Order Number field  
+        PRODUCT_FIELD = "field_98"            # Product field
+        CUSTOMER_FIELD = "field_180"          # Customer field (you mentioned field_180 earlier)
+        
+        url = f"https://api.knack.com/v1/objects/{PRODUCTION_ORDERS_OBJECT}/records"
+        params = {
+            'filters': f'[{{"{ORDER_ID_FIELD}": "{order_id}"}}]',
+            'rows_per_page': 1
+        }
+        
+        response = requests.get(url, headers={
+            'X-Knack-Application-Id': app_id,
+            'X-Knack-REST-API-Key': api_token
+        }, params=params, timeout=5)
+        
+        if response.ok:
+            records = response.json().get('records', [])
+            if records:
+                record = records[0]
+                return {
+                    'product_id': record.get(PRODUCT_FIELD, {}).get('identifier', 'PROD001'),
+                    'customer': record.get(CUSTOMER_FIELD, {}).get('identifier', 'Test Customer'),
+                    'order_id': order_id
+                }
+        
+        logger.warning(f"Order {order_id} not found")
+        return {}
+        
+    except Exception as e:
+        logger.error(f"Order lookup failed: {e}")
+        return {}
+
+
+
 @app.post("/promise-order")
 async def promise_order(request: Request):
     try:
         payload = await request.json()
-        logger.info(f"🔮 Promise run '{payload.get('run_id', 'unknown')}': "
-                    f"{len(payload.get('production_orders', []))} trial orders")
+        logger.info(f"🔮 Promise run '{payload.get('run_id', 'unknown')}': {len(payload.get('production_orders', []))} trial orders")
+        
+        # 🔥 LOOKUP PRODUCTION ORDER DETAILS SERVER-SIDE (no CORS!)
+        reference_order = payload.get('reference_order')  # "OP_ORD_002"
+        if reference_order:
+            order_details = lookup_production_order(reference_order)
+            logger.info(f"✅ Order lookup: {order_details}")
+            
+            # Override payload with real data
+            trial_order = payload['production_orders'][0]
+            trial_order['product_id'] = order_details.get('product_id', trial_order.get('product_id', 'PROD001'))
+            trial_order['customer'] = order_details.get('customer', trial_order.get('customer', 'Test Customer'))
         
         result = solve_schedule(payload, promise_mode=True)
-
-        logger.info(f"✅ Promise '{payload.get('run_id')}' COMPLETE: "
-                    f"feasible={result.get('feasible')} "
-                    f"proposed_date={result.get('proposed_date')}")
         return result
-
+        
     except Exception as e:
         logger.error(f"❌ Promise error: {str(e)}")
-        return {
-            "run_id": "promise-error",
-            "feasible": False,
-            "proposed_date": None,
-            "lateness_hours": None,
-            "status": "error",
-            "status_message": f"Error: {str(e)}",
-        }
+        return {"feasible": False, "status_message": str(e)}
 
