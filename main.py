@@ -276,20 +276,20 @@ async def health_check():
 logger.info("API ready at http://127.0.0.1:8000/docs")
 
 def lookup_production_order(order_id: str) -> dict:
-    """Lookup Production Order details from Knack (server-side, no CORS)"""
+    """Lookup Production Order details from Knack"""
     try:
         app_id = os.getenv("KNACK_APP_ID")
         api_token = os.getenv("KNACK_API_TOKEN")
         
-        # YOUR ACTUAL FIELD/OBJECT IDs - UPDATE THESE:
-        PRODUCTION_ORDERS_OBJECT = "object_3"  # Production Orders table
-        ORDER_ID_FIELD = "field_17"           # Order Number field  
-        PRODUCT_FIELD = "field_98"            # Product field
-        CUSTOMER_FIELD = "field_180"          # Customer field (you mentioned field_180 earlier)
+        PRODUCTION_ORDERS_OBJECT = "object_3"
+        ORDER_ID_FIELD = "field_17"        # ← Order Number (OP_ORD_002)
+        PRODUCT_FIELD = "field_98"         # Product
+        CUSTOMER_FIELD = "field_180"       # Customer
         
+        # 🔥 FIX: Filter on ORDER_ID_FIELD (field_17), not PRODUCT_FIELD
         url = f"https://api.knack.com/v1/objects/{PRODUCTION_ORDERS_OBJECT}/records"
         params = {
-            'filters': f'[{{"{ORDER_ID_FIELD}": "{order_id}"}}]',
+            'filters': f'[{{"{ORDER_ID_FIELD}": {{ "exact": "{order_id}" }}}]',
             'rows_per_page': 1
         }
         
@@ -298,19 +298,19 @@ def lookup_production_order(order_id: str) -> dict:
             'X-Knack-REST-API-Key': api_token
         }, params=params, timeout=5)
         
+        logger.info(f"Order lookup {order_id}: status={response.status_code}")
+        
         if response.ok:
             records = response.json().get('records', [])
             if records:
                 record = records[0]
+                logger.info(f"Found order: product={record.get(PRODUCT_FIELD)}, customer={record.get(CUSTOMER_FIELD)}")
                 return {
-                    'product_id': record.get(PRODUCT_FIELD, {}).get('identifier', 'PROD001'),
-                    'customer': record.get(CUSTOMER_FIELD, {}).get('identifier', 'Test Customer'),
-                    'order_id': order_id
+                    'product_id': record[PRODUCT_FIELD]['identifier'] if record.get(PRODUCT_FIELD) else 'PROD001',
+                    'customer': record[CUSTOMER_FIELD]['identifier'] if record.get(CUSTOMER_FIELD) else 'Test Customer'
                 }
         
-        logger.warning(f"Order {order_id} not found")
         return {}
-        
     except Exception as e:
         logger.error(f"Order lookup failed: {e}")
         return {}
