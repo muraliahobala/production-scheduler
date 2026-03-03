@@ -277,7 +277,6 @@ logger.info("API ready at http://127.0.0.1:8000/docs")
 
 def lookup_production_order(order_id: str) -> dict:
     try:
-        # Use field_17_raw for exact match
         params = {
             'filters': f'[{{"field_17_raw": {{"exact": "{order_id}"}}}}]',
             'rows_per_page': 1
@@ -288,16 +287,26 @@ def lookup_production_order(order_id: str) -> dict:
                                      'X-Knack-REST-API-Key': os.getenv("KNACK_API_TOKEN")},
                               params=params)
         
+        logger.info(f"🔍 LOOKUP RAW RESPONSE for {order_id}: {response.text[:1000]}")
+        
         if response.ok and response.json().get('records'):
             record = response.json()['records'][0]
+            logger.info(f"🔍 OP_ORD_002 RECORD: field_17={record.get('field_17')}")
+            logger.info(f"🔍 field_98={record.get('field_98')}")
+            logger.info(f"🔍 field_98_raw={record.get('field_98_raw')}")
+            logger.info(f"🔍 field_181={record.get('field_181')}")  # You had PROD004 here too
+            
             product_raw = record.get('field_98_raw', [])
+            product_id = product_raw[0]['identifier'] if product_raw else 'PROD001'
+            
             return {
-                'product_id': product_raw[0]['identifier'] if product_raw else 'PROD001',
+                'product_id': product_id,
                 'customer': record.get('field_180_raw', [{}])[0].get('identifier', 'Test Customer')
             }
         
         return {'product_id': 'PROD001', 'customer': 'Test Customer'}
-    except:
+    except Exception as e:
+        logger.error(f"❌ Lookup crashed: {e}")
         return {'product_id': 'PROD001', 'customer': 'Test Customer'}
 
 
