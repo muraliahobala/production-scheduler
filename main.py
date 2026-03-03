@@ -277,59 +277,28 @@ logger.info("API ready at http://127.0.0.1:8000/docs")
 
 def lookup_production_order(order_id: str) -> dict:
     try:
-        app_id = os.getenv("KNACK_APP_ID")
-        api_token = os.getenv("KNACK_API_TOKEN")
-        
-        PRODUCTION_ORDERS_OBJECT = "object_3"
-        ORDER_ID_FIELD = "field_17"        
-        PRODUCT_FIELD = "field_98"         
-        CUSTOMER_FIELD = "field_180"       
-        
-        url = f"https://api.knack.com/v1/objects/{PRODUCTION_ORDERS_OBJECT}/records"
+        # Use field_17_raw for exact match
         params = {
-            'filters': f'[{{"{ORDER_ID_FIELD}": {{"exact": "{order_id}"}}}}]',
+            'filters': f'[{{"field_17_raw": {{"exact": "{order_id}"}}}}]',
             'rows_per_page': 1
         }
         
-        logger.info(f"🔍 Looking up {order_id} with params: {params}")
+        response = requests.get(f"https://api.knack.com/v1/objects/object_3/records", 
+                              headers={'X-Knack-Application-Id': os.getenv("KNACK_APP_ID"),
+                                     'X-Knack-REST-API-Key': os.getenv("KNACK_API_TOKEN")},
+                              params=params)
         
-        response = requests.get(url, headers={
-            'X-Knack-Application-Id': app_id,
-            'X-Knack-REST-API-Key': api_token
-        }, params=params, timeout=5)
+        if response.ok and response.json().get('records'):
+            record = response.json()['records'][0]
+            product_raw = record.get('field_98_raw', [])
+            return {
+                'product_id': product_raw[0]['identifier'] if product_raw else 'PROD001',
+                'customer': record.get('field_180_raw', [{}])[0].get('identifier', 'Test Customer')
+            }
         
-        logger.info(f"Order lookup {order_id}: status={response.status_code}, response={response.text[:500]}")
-        
-        if response.ok:
-            data = response.json()
-            records = data.get('records', [])
-            logger.info(f"Found {len(records)} records")
-            
-            if records:
-                record = records[0]
-                logger.info(f"Full record: {record}")
-                
-                # 🔥 SAFER EXTRACTION
-                product_raw = record.get(PRODUCT_FIELD, {})
-                customer_raw = record.get(CUSTOMER_FIELD, {})
-                
-                product_id = (product_raw.get('identifier') or 
-                             product_raw.get('raw') or 
-                             str(product_raw) or 'PROD001')
-                             
-                customer = (customer_raw.get('identifier') or 
-                           customer_raw.get('raw') or 
-                           str(customer_raw) or 'Test Customer')
-                           
-                logger.info(f"✅ Extracted: product_id='{product_id}', customer='{customer}'")
-                return {'product_id': product_id, 'customer': customer}
-        
-        logger.warning(f"❌ No records found for {order_id}")
-        return {'product_id': 'PROD001', 'customer': 'Test Customer'}  # ✅ ALWAYS RETURN DEFAULT
-        
-    except Exception as e:
-        logger.error(f"❌ Lookup crashed: {e}")
-        return {'product_id': 'PROD001', 'customer': 'Test Customer'}  # ✅ ALWAYS RETURN DEFAULT
+        return {'product_id': 'PROD001', 'customer': 'Test Customer'}
+    except:
+        return {'product_id': 'PROD001', 'customer': 'Test Customer'}
 
 
 @app.post("/promise-order")
