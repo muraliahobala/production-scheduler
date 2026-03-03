@@ -360,24 +360,30 @@ async def save_promise_record(request: Request):
     """Save promise results to Knack Promise Orders table"""
     try:
         payload = await request.json()
-        record_id = payload.get('record_id')  # field_22 from form
+        record_id = payload.get('record_id')
         result = payload.get('result')
         
+        logger.info(f"💾 SAVE REQUEST: record_id='{record_id}', feasible={result.get('feasible')}")
+        
         if not record_id:
+            logger.error("❌ NO RECORD_ID")
             return {"error": "Missing record_id"}
+        
+        # 🔥 **FIX 1: REAL OBJECT ID** (Promise Orders table = object_3? Same as Production Orders?)
+        PROMISE_OBJECT = "object_3"  # ← **CHANGE THIS** to your actual Promise Orders object ID
         
         app_id = os.getenv("KNACK_APP_ID")
         api_token = os.getenv("KNACK_API_TOKEN")
         
-        # 🔥 YOUR PROMISE ORDERS TABLE (view_69 = object_X?)
-        PROMISE_OBJECT = "object_X"  # ← REPLACE with actual object ID
         url = f"https://api.knack.com/v1/objects/{PROMISE_OBJECT}/records/{record_id}"
         
         update_data = {
-            "field_178": "Yes" if result.get("feasible") else "No",  # Feasibility
-            "field_179": result.get("status_message", "Promised"),    # Status
-            "field_177": result.get("proposed_date", "")              # Proposed Date (ISO)
+            "field_178": "Yes" if result.get("feasible") else "No",
+            "field_179": result.get("status_message", "Promised"),
+            "field_177": result.get("proposed_date", "").split("T")[0] if result.get("proposed_date") else ""
         }
+        
+        logger.info(f"💾 Updating {url} with: {update_data}")
         
         response = requests.put(url, headers={
             'X-Knack-Application-Id': app_id,
@@ -385,15 +391,16 @@ async def save_promise_record(request: Request):
             'Content-Type': 'application/json'
         }, json=update_data, timeout=5)
         
+        logger.info(f"💾 Knack response: {response.status_code} - {response.text[:300]}")
+        
         if response.ok:
-            logger.info(f"✅ Saved promise record {record_id}")
-            return {"success": True}
+            logger.info(f"✅ SAVED promise record {record_id}")
+            return {"success": True, "message": "Saved to Knack!"}
         else:
-            logger.error(f"❌ Save failed: {response.text}")
-            return {"error": response.text}
+            logger.error(f"❌ Knack save failed {response.status_code}: {response.text}")
+            return {"error": f"HTTP {response.status_code}: {response.text}"}
             
     except Exception as e:
-        logger.error(f"❌ Save error: {e}")
+        logger.error(f"❌ Save crashed: {e}", exc_info=True)
         return {"error": str(e)}
-
 
