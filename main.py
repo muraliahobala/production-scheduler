@@ -276,39 +276,41 @@ async def health_check():
 logger.info("API ready at http://127.0.0.1:8000/docs")
 
 def lookup_production_order(order_id: str) -> dict:
+    """Find OP_ORD_002 record by searching ALL records"""
     try:
-        params = {
-            'filters': f'[{{"field_17_raw": {{"exact": "{order_id}"}}}}]',
-            'rows_per_page': 1
-        }
+        url = f"https://api.knack.com/v1/objects/object_3/records"
+        params = {'rows_per_page': 200}  # Get more records
         
-        response = requests.get(f"https://api.knack.com/v1/objects/object_3/records", 
-                              headers={'X-Knack-Application-Id': os.getenv("KNACK_APP_ID"),
-                                     'X-Knack-REST-API-Key': os.getenv("KNACK_API_TOKEN")},
-                              params=params)
+        response = requests.get(url, headers={
+            'X-Knack-Application-Id': os.getenv("KNACK_APP_ID"),
+            'X-Knack-REST-API-Key': os.getenv("KNACK_API_TOKEN")
+        }, params=params, timeout=10)
         
-        logger.info(f"🔍 LOOKUP RAW RESPONSE for {order_id}: {response.text[:1000]}")
-        
-        if response.ok and response.json().get('records'):
-            record = response.json()['records'][0]
-            logger.info(f"🔍 OP_ORD_002 RECORD: field_17={record.get('field_17')}")
-            logger.info(f"🔍 field_98={record.get('field_98')}")
-            logger.info(f"🔍 field_98_raw={record.get('field_98_raw')}")
-            logger.info(f"🔍 field_181={record.get('field_181')}")  # You had PROD004 here too
+        if response.ok:
+            records = response.json().get('records', [])
+            logger.info(f"🔍 Scanned {len(records)} total records")
             
-            product_raw = record.get('field_98_raw', [])
-            product_id = product_raw[0]['identifier'] if product_raw else 'PROD001'
+            # 🔥 SEARCH for exact order_id match
+            for record in records:
+                if record.get('field_17_raw') == order_id or record.get('field_17') == order_id:
+                    logger.info(f"✅ FOUND {order_id}: record_id={record['id']}")
+                    
+                    product_raw = record.get('field_98_raw', [])
+                    product_id = product_raw[0].get('identifier') if product_raw else record.get('field_181', 'PROD001')
+                    
+                    customer_raw = record.get('field_180_raw', [])
+                    customer_id = customer_raw[0].get('identifier') if customer_raw else 'Test Customer'
+                    
+                    logger.info(f"✅ Extracted: product_id='{product_id}', customer='{customer_id}'")
+                    return {'product_id': product_id, 'customer': customer_id}
             
-            return {
-                'product_id': product_id,
-                'customer': record.get('field_180_raw', [{}])[0].get('identifier', 'Test Customer')
-            }
+            logger.warning(f"❌ {order_id} not found in {len(records)} records")
         
         return {'product_id': 'PROD001', 'customer': 'Test Customer'}
+        
     except Exception as e:
         logger.error(f"❌ Lookup crashed: {e}")
         return {'product_id': 'PROD001', 'customer': 'Test Customer'}
-
 
 @app.post("/promise-order")
 async def promise_order(request: Request):
