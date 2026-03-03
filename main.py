@@ -357,50 +357,71 @@ async def promise_order(request: Request):
         
 @app.post("/save-promise-record")
 async def save_promise_record(request: Request):
-    """Save promise results to Knack Promise Orders table"""
+    """Find & update promise record by reference_order (LIKE PRODUCTION SCHEDULER)"""
     try:
         payload = await request.json()
-        record_id = payload.get('record_id')
         result = payload.get('result')
         
-        logger.info(f"💾 SAVE REQUEST: record_id='{record_id}', feasible={result.get('feasible')}")
+        # 🔥 STEP 1: Extract reference_order from result (like scheduler does)
+        reference_order = None
+        if (result.get('production_orders') and 
+            len(result['production_orders']) > 0):
+            reference_order = result['production_orders'][0].get('reference_order')
         
-        if not record_id:
-            logger.error("❌ NO RECORD_ID")
-            return {"error": "Missing record_id"}
+        logger.info(f"💾 Promise save: reference_order='{reference_order}'")
         
-        # 🔥 **FIX 1: REAL OBJECT ID** (Promise Orders table = object_3? Same as Production Orders?)
-        PROMISE_OBJECT = "object_3"  # ← **CHANGE THIS** to your actual Promise Orders object ID
+        if not reference_order:
+            return {"error": "No reference_order in result"}
         
-        app_id = os.getenv("KNACK_APP_ID")
-        api_token = os.getenv("KNACK_API_TOKEN")
+        # 🔥 STEP 2: Find record by reference_order (SAME AS lookup_production_order)
+        records = []
+        url = f"https://api.knack.com/v1/objects/object_3/records"
+        params = {'rows_per_page': 200}
         
-        url = f"https://api.knack.com/v1/objects/{PROMISE_OBJECT}/records/{record_id}"
+        response = requests.get(url, headers={
+            'X-Knack-Application-Id': os.getenv("KNACK_APP_ID"),
+            'X-Knack-REST-API-Key': os.getenv("KNACK_API_TOKEN")
+        }, params=params)
         
+        if response.ok:
+            records = response.json().get('records', [])
+            logger.info(f"🔍 Found {len(records)} records")
+            
+            # Find matching record
+            target_record = None
+            for record in records:
+                if record.get('field_17') == reference_order or record.get('field_17_raw') == reference_order:
+                    target_record = record
+                    break
+            
+            if not target_record:
+                logger.error(f"❌ No record found for {reference_order}")
+                return {"error": f"Promise record '{reference_order}' not found"}
+            
+            record_id = target_record['id']
+            logger.info(f"✅ Found record {record_id} for {reference_order}")
+        
+        # 🔥 STEP 3: Update record (SAME FIELDS AS BEFORE)
         update_data = {
             "field_178": "Yes" if result.get("feasible") else "No",
             "field_179": result.get("status_message", "Promised"),
-            "field_177": result.get("proposed_date", "").split("T")[0] if result.get("proposed_date") else ""
+            "field_177": result.get("proposed_date", "").split("T")[0]
         }
         
-        logger.info(f"💾 Updating {url} with: {update_data}")
-        
-        response = requests.put(url, headers={
-            'X-Knack-Application-Id': app_id,
-            'X-Knack-REST-API-Key': api_token,
+        update_url = f"https://api.knack.com/v1/objects/object_3/records/{record_id}"
+        response = requests.put(update_url, headers={
+            'X-Knack-Application-Id': os.getenv("KNACK_APP_ID"),
+            'X-Knack-REST-API-Key': os.getenv("KNACK_API_TOKEN"),
             'Content-Type': 'application/json'
-        }, json=update_data, timeout=5)
+        }, json=update_data)
         
-        logger.info(f"💾 Knack response: {response.status_code} - {response.text[:300]}")
+        logger.info(f"💾 Updated {record_id}: {response.status_code}")
         
         if response.ok:
-            logger.info(f"✅ SAVED promise record {record_id}")
-            return {"success": True, "message": "Saved to Knack!"}
+            return {"success": True, "record_id": record_id, "reference_order": reference_order}
         else:
-            logger.error(f"❌ Knack save failed {response.status_code}: {response.text}")
-            return {"error": f"HTTP {response.status_code}: {response.text}"}
+            return {"error": response.text}
             
     except Exception as e:
-        logger.error(f"❌ Save crashed: {e}", exc_info=True)
+        logger.error(f"❌ Save error: {e}")
         return {"error": str(e)}
-
