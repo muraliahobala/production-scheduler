@@ -336,33 +336,42 @@ def lookup_production_order(order_id: str) -> dict:
 async def promise_order(request: Request):
     try:
         payload = await request.json()
-        logger.info(f"🔮 Promise payload: {payload}")
+        logger.info(f"🔮 Promise payload received: run_id={payload.get('run_id')}")
         
-        # Lookup order details
-        reference_order = payload.get('reference_order')
-        if reference_order:
-            order_details = lookup_production_order(reference_order)
-            logger.info(f"✅ Order lookup result: {order_details}")
-            
-            # ✅ ENSURE production_orders exists and has product_id
-            if 'production_orders' in payload and payload['production_orders']:
-                trial_order = payload['production_orders'][0]
-                trial_order.setdefault('product_id', order_details.get('product_id', 'PROD001'))
-                trial_order.setdefault('customer', order_details.get('customer', 'Test Customer'))
-                logger.info(f"✅ Updated trial order: {trial_order}")
-            else:
-                logger.error("❌ No production_orders in payload!")
-                return {"feasible": False, "status_message": "Missing production_orders"}
+        # 🔥 FIX 1: Correctly extract reference_order from production_orders[0]
+        reference_order = None
+        if (payload.get('production_orders') and 
+            len(payload['production_orders']) > 0 and 
+            'reference_order' in payload['production_orders'][0]):
+            reference_order = payload['production_orders'][0]['reference_order']
+            logger.info(f"✅ Found reference_order: {reference_order}")
         else:
-            logger.warning("❌ No reference_order provided")
+            logger.warning("❌ No reference_order in production_orders[0]")
+        
+        # 🔥 FIX 2: Always ensure product_id exists (default to PROD001)
+        if payload.get('production_orders') and payload['production_orders']:
+            trial_order = payload['production_orders'][0]
+            if 'product_id' not in trial_order:
+                trial_order['product_id'] = 'PROD001'  # Default
+                logger.info("✅ Added default product_id=PROD001")
+            
+            # Lookup if reference_order exists
+            if reference_order:
+                order_details = lookup_production_order(reference_order)
+                trial_order['product_id'] = order_details.get('product_id', trial_order['product_id'])
+                trial_order['customer'] = order_details.get('customer', 'Test Customer')
+                logger.info(f"✅ Updated with lookup: {order_details}")
+        
+        logger.info(f"🔮 Final production_orders[0]: {payload['production_orders'][0]}")
         
         result = solve_schedule(payload, promise_mode=True)
-        logger.info(f"✅ Promise result: {result}")
+        logger.info(f"✅ Promise COMPLETE: feasible={result.get('feasible', False)}")
         return result
         
     except KeyError as e:
         logger.error(f"❌ Promise KeyError: {e}")
-        return {"feasible": False, "status_message": f"Missing field: {e}"}
+        return {"feasible": False, "status_message": f"Missing required field: {e}"}
     except Exception as e:
-        logger.error(f"❌ Promise error: {str(e)}")
+        logger.error(f"❌ Promise error: {str(e)}", exc_info=True)
         return {"feasible": False, "status_message": str(e)}
+
