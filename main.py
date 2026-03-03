@@ -357,27 +357,19 @@ async def promise_order(request: Request):
         
 @app.post("/save-promise-record")
 async def save_promise_record(request: Request):
-    """Find & update promise record by reference_order (LIKE PRODUCTION SCHEDULER)"""
     try:
         payload = await request.json()
+        reference_order = payload.get('reference_order')  # ✅ Direct from JS
         result = payload.get('result')
-        
-        # 🔥 STEP 1: Extract reference_order from result (like scheduler does)
-        reference_order = None
-        if (result.get('production_orders') and 
-            len(result['production_orders']) > 0):
-            reference_order = result['production_orders'][0].get('reference_order')
         
         logger.info(f"💾 Promise save: reference_order='{reference_order}'")
         
         if not reference_order:
-            return {"error": "No reference_order in result"}
+            return {"error": "No reference_order provided"}
         
-        # 🔥 STEP 2: Find record by reference_order (SAME AS lookup_production_order)
-        records = []
+        # Find record by reference_order (unchanged)
         url = f"https://api.knack.com/v1/objects/object_3/records"
         params = {'rows_per_page': 200}
-        
         response = requests.get(url, headers={
             'X-Knack-Application-Id': os.getenv("KNACK_APP_ID"),
             'X-Knack-REST-API-Key': os.getenv("KNACK_API_TOKEN")
@@ -385,9 +377,6 @@ async def save_promise_record(request: Request):
         
         if response.ok:
             records = response.json().get('records', [])
-            logger.info(f"🔍 Found {len(records)} records")
-            
-            # Find matching record
             target_record = None
             for record in records:
                 if record.get('field_17') == reference_order or record.get('field_17_raw') == reference_order:
@@ -401,7 +390,7 @@ async def save_promise_record(request: Request):
             record_id = target_record['id']
             logger.info(f"✅ Found record {record_id} for {reference_order}")
         
-        # 🔥 STEP 3: Update record (SAME FIELDS AS BEFORE)
+        # Update with promise results
         update_data = {
             "field_178": "Yes" if result.get("feasible") else "No",
             "field_179": result.get("status_message", "Promised"),
@@ -415,10 +404,10 @@ async def save_promise_record(request: Request):
             'Content-Type': 'application/json'
         }, json=update_data)
         
-        logger.info(f"💾 Updated {record_id}: {response.status_code}")
+        logger.info(f"💾 Updated {record_id}: status={response.status_code}")
         
         if response.ok:
-            return {"success": True, "record_id": record_id, "reference_order": reference_order}
+            return {"success": True, "record_id": record_id}
         else:
             return {"error": response.text}
             
