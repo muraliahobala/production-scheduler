@@ -354,4 +354,46 @@ async def promise_order(request: Request):
     except Exception as e:
         logger.error(f"❌ Promise error: {str(e)}", exc_info=True)
         return {"feasible": False, "status_message": str(e)}
+        
+@app.post("/save-promise-record")
+async def save_promise_record(request: Request):
+    """Save promise results to Knack Promise Orders table"""
+    try:
+        payload = await request.json()
+        record_id = payload.get('record_id')  # field_22 from form
+        result = payload.get('result')
+        
+        if not record_id:
+            return {"error": "Missing record_id"}
+        
+        app_id = os.getenv("KNACK_APP_ID")
+        api_token = os.getenv("KNACK_API_TOKEN")
+        
+        # 🔥 YOUR PROMISE ORDERS TABLE (view_69 = object_X?)
+        PROMISE_OBJECT = "object_X"  # ← REPLACE with actual object ID
+        url = f"https://api.knack.com/v1/objects/{PROMISE_OBJECT}/records/{record_id}"
+        
+        update_data = {
+            "field_178": "Yes" if result.get("feasible") else "No",  # Feasibility
+            "field_179": result.get("status_message", "Promised"),    # Status
+            "field_177": result.get("proposed_date", "")              # Proposed Date (ISO)
+        }
+        
+        response = requests.put(url, headers={
+            'X-Knack-Application-Id': app_id,
+            'X-Knack-REST-API-Key': api_token,
+            'Content-Type': 'application/json'
+        }, json=update_data, timeout=5)
+        
+        if response.ok:
+            logger.info(f"✅ Saved promise record {record_id}")
+            return {"success": True}
+        else:
+            logger.error(f"❌ Save failed: {response.text}")
+            return {"error": response.text}
+            
+    except Exception as e:
+        logger.error(f"❌ Save error: {e}")
+        return {"error": str(e)}
+
 
